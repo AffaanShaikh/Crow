@@ -1,11 +1,11 @@
 """
-image_processor.py — Avatar Image Processing Service
+image_processor.py - Avatar Image Processing Service
 -----------------------------------------------------
 Runs as a standalone FastAPI service on port 8001.
 Receives an image (URL, local path, or base64), removes its background
 via rembg, and returns the result as a base64-encoded PNG.
 
-Usage:
+Usage::
     pip install fastapi uvicorn rembg pillow httpx
     uvicorn image_processor:app --host 0.0.0.0 --port 8001 --reload
 
@@ -46,7 +46,7 @@ app.add_middleware(
 )
 
 # Pre-load the rembg session once so the first request is fast
-log.info("Loading rembg model (u2net)…")
+log.info("Loading rembg model (u2net)..")
 _SESSION = new_session("u2net")
 log.info("rembg model ready.")
 
@@ -91,7 +91,7 @@ async def process_image(req: ImageRequest):
     # ── 1. Resolve input ──────────────────────────────────────────────────────
     if req.image_base64:
         source = "base64"
-        log.info("Processing image from base64 input…")
+        log.info("Processing image from base64 input..")
         try:
             raw = base64.b64decode(req.image_base64)
         except Exception as exc:
@@ -125,8 +125,8 @@ async def process_image(req: ImageRequest):
             detail="Provide one of: image_url, image_path, or image_base64",
         )
 
-    # ── 2. Remove background ──────────────────────────────────────────────────
-    log.info("Removing background (source=%s, size=%d bytes)…", source, len(raw))
+    # bg removal
+    log.info("Removing background (source=%s, size=%d bytes)..", source, len(raw))
     try:
         processed = _remove_bg(raw)
     except Exception as exc:
@@ -134,7 +134,7 @@ async def process_image(req: ImageRequest):
         raise HTTPException(status_code=500, detail=f"Background removal failed: {exc}")
 
     elapsed = (time.perf_counter() - t0) * 1000
-    log.info("Done — %.1f ms, output size=%d bytes", elapsed, len(processed))
+    log.info("Done - %.1f ms, output size=%d bytes", elapsed, len(processed))
 
     return ImageResponse(
         image=base64.b64encode(processed).decode(),

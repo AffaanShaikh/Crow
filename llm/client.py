@@ -5,7 +5,7 @@ wraps the OpenAI-compatible REST API exposed by 'llama-server',
 supports both streaming (SSE) and non-streaming completion,
 handles retries, timeouts, and some sweet logging
 
-based on Adapter Pattern, allowing us to swap out the underlying LLM server with minimal changes to the rest of the codebase.
+based on the *Adapter Pattern*, allowing us to swap out the underlying LLM server with minimal changes to the rest of the codebase.
 """
 
 import asyncio
@@ -29,7 +29,9 @@ settings = get_settings()
 class LLMClient:
     """
     a thin async wrapper around the OpenAI-compatible llama.cpp server
-    Usage:
+
+    Usage::
+
         client = LLMClient()
         await client.health_check()
 
@@ -122,7 +124,7 @@ class LLMClient:
         max_tokens: int | None = None,
     ) -> tuple[str, dict[str, int]]:
         """
-        non-streaming completion.
+        non-streaming completion
         Returns:
             (response_text, usage_dict)
         """
@@ -208,7 +210,7 @@ class LLMClient:
 _llm_client: LLMClient | None = None
 
 def get_llm_client() -> LLMClient:
-    """FastAPI dependency: returns the module-level LLM client"""
+    """FastAPI dependency: returns the module-level LLM client."""
     if _llm_client is None:
         raise RuntimeError("LLMClient not initialised. Check lifespan setup.")
     return _llm_client

@@ -56,7 +56,7 @@ class SessionState:
 
 class ContextManager:
     """
-    manages per-session conversation context
+    manages per-session conversation context,
     key responsibilities:
     - store turns after each exchange
     - return only the turns that fit within the token budget
@@ -104,7 +104,7 @@ class ContextManager:
     def _trim_to_budget(self, turns: list[dict]) -> list[dict]:
         """
         we trim by keeping the most recent turns that fit within the token budget
-        & always keeps at least 1 turn so the model has some grounding
+        & always keeps at least 1 turn so the model has some grounding.
         """
         # reserved tokens for: system prompt + few-shot + new user message 
         reserved = 800
@@ -138,7 +138,7 @@ class ContextManager:
         user_message: str,
         assistant_response: str,
     ) -> None:
-        """record a completed exchange and trigger summarisation if needed."""
+        """record a completed exchange and trigger summarisation if needed"""
         session = self.get_or_create_session(session_id)
         async with session.lock:
             session.turns.append({

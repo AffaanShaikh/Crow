@@ -4,8 +4,10 @@ FastAPI app for the local AI,
         1. Logging configured
         2. LLM client initialised (connects to llama-server)
         3. Context manager initialised
-        4. Routes registered
-        5. Middleware applied (CORS, request logging, error handling)
+        4. ASR model loaded (if enabled)
+        5. TTS model loaded (if enabled)
+        6. Tool registry initialised + MCP agent loop wired (if enabled)
+        7. Routes registered w/ Middleware (CORS, request logging, error handling)
 
 Run with:
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -19,7 +21,6 @@ from typing import AsyncIterator
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
 import structlog
 
 from config import get_settings
@@ -59,6 +60,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             hint="Make sure llama-server is running: ollama serve",
         )
 
+    # ASR
+    if settings.asr_enabled:
+        from audio.asr import init_asr_service
+        asr = init_asr_service()
+        await asr.load_model()
+        log.info("asr_ready", model=settings.asr_model_size)
+    else:
+        log.info("asr_disabled")
+
+    # TTS
+    if settings.tts_enabled:
+        from audio.tts import init_tts_service
+        tts = init_tts_service()
+        await tts.load_model()
+        log.info("tts_ready", voice=settings.tts_voice)
+    else:
+        log.info("tts_disabled")
+
+    # MCP / Agent
+    if settings.mcp_enabled:
+        from mcp.registry import init_registry
+        from mcp.dispatcher import ToolDispatcher
+        from mcp.agent_loop import init_agent_loop
+        registry = init_registry()
+        dispatcher = ToolDispatcher(registry, dry_run=settings.mcp_dry_run)
+        init_agent_loop(llm_client, dispatcher, registry)
+        log.info("mcp_ready", tools=len(registry), dry_run=settings.mcp_dry_run)
+    else:
+        log.info("mcp_disabled")
+
     log.info("app_ready", host=settings.host, port=settings.port)
     yield  # <- application runs here
 
@@ -97,16 +128,10 @@ async def request_logging_middleware(request: Request, call_next) -> Response:
     response: Response = await call_next(request)
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    # don't spam logs with health-check noise
-    if request.url.path != "/health":
-        log.info(
-            "http_request",
-            method=request.method,
-            path=request.url.path,
-            status=response.status_code,
-            elapsed_ms=elapsed_ms,
-        )
-
+    # don't spam logs with health-check noise 
+    if request.url.path not in ("/api/v1/health", "/"):
+        log.info("http_request", method=request.method, path=request.url.path,
+                 status=response.status_code, elapsed_ms=elapsed_ms)
     response.headers["X-Request-ID"] = request_id
     structlog.contextvars.clear_contextvars()
     return response
@@ -123,8 +148,19 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 
 # routers
+
 app.include_router(chat.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
+
+# audio routes (registered only if enabled to keep import side-effects lazy)
+if settings.asr_enabled or settings.tts_enabled:
+    from api.routes.audio import router as audio_router
+    app.include_router(audio_router, prefix="/api/v1")
+
+# agent routes
+if settings.mcp_enabled:
+    from api.routes.agent import router as agent_router
+    app.include_router(agent_router, prefix="/api/v1")
 
 
 @app.get("/", include_in_schema=False)
@@ -134,6 +170,11 @@ async def root():
         "version": settings.app_version,
         "docs": "/docs",
         "health": "/api/v1/health",
+        "features": {
+            "asr": settings.asr_enabled,
+            "tts": settings.tts_enabled,
+            "mcp": settings.mcp_enabled,
+        },
     }
 
 
@@ -146,5 +187,5 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=settings.environment == "development",
-        log_config=None,   # let structlog handle all logging
+        log_config=None, # let structlog handle all logging
     )

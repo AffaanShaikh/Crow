@@ -3,37 +3,36 @@ uses structlog for JSON output in production, pretty console output in developme
 """
 
 import logging
+import os
 import sys
 from typing import Any
-import structlog
+import structlog 
 
+LOG_DIR = "./logs"
+os.makedirs(LOG_DIR, exist_ok=True)
 
 def setup_logging(log_level: str = "INFO", json_logs: bool = False) -> None:
     """
     configures structlog + stdlib logging
-    args:
+    Args:
         log_level: Logging level string (DEBUG, INFO, WARNING, ERROR).
         json_logs: If True, emit JSON lines (good for log aggregators)
                    If False, emit human-readable coloured output
     """
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-    ]
+        structlog.stdlib.add_log_level,                                         # [light green, for 'info'] 
+        structlog.stdlib.add_logger_name,                                       # [dark blue, file name]
+        structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),#(fmt="iso"), # grey, time
+        structlog.processors.StackInfoRenderer(),                               # attaches error stack trace if true
+        structlog.processors.format_exc_info,                                   # ensures proper stack trace in JSON logs
+    ] 
 
-    if json_logs:
-        # i.e. in production: machine-readable JSON lines
-        renderer = structlog.processors.JSONRenderer()
-    else:
-        # else in development: coloured key=value output coz we likey farbe
-        renderer = structlog.dev.ConsoleRenderer(colors=True)
+    file_renderer = structlog.processors.JSONRenderer()
 
     structlog.configure(
         processors=shared_processors
-        + [
+        + [ # 'ProcessorFormatter.wrap_for_formatter' tells structlog not to render the event yet, let Python logging handlers render it
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -41,19 +40,38 @@ def setup_logging(log_level: str = "INFO", json_logs: bool = False) -> None:
         cache_logger_on_first_use=True,
     )
 
-    formatter = structlog.stdlib.ProcessorFormatter(
+    # formatters (console formatter later)
+    file_formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=shared_processors,
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            renderer,
+            file_renderer,
         ],
     )
+ 
+    # logs everything to 2 places during development: stdout (console) & logs/app.log
+    # logs everything to 1 place during deployment:  json logs in logs/app.log 
 
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(formatter)
+    # in deployment and dev., json logs in app.log
+    file_handler = logging.FileHandler(os.path.join(LOG_DIR, "app.log"))
+    file_handler.setFormatter(file_formatter)
 
     root_logger = logging.getLogger()
-    root_logger.handlers = [handler]
+    root_logger.handlers = [file_handler]
+
+    if not json_logs: # i.e. in dev., app.log and console
+        console_renderer = structlog.dev.ConsoleRenderer(colors=True)
+        console_formatter = structlog.stdlib.ProcessorFormatter(
+            foreign_pre_chain=shared_processors,
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                console_renderer,
+            ],
+        )
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(console_formatter)
+        root_logger.handlers.insert(0, console_handler)
+
     root_logger.setLevel(log_level.upper())
 
     # we silence the noisy third-party loggers

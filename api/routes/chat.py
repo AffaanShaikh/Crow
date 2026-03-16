@@ -42,9 +42,9 @@ async def chat_stream(
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
     """
-    streams LLM response tokens via Server-Sent Events,
+    Streams LLM response tokens via Server-Sent Events,
     frontend connects via EventSource and reads 'data:' lines,
-    each line is a JSON-encoded StreamEvent
+    each line is a JSON-encoded StreamEvent.
 
     Events:
       {"type": "delta", "content": "<token>"}
@@ -139,8 +139,9 @@ async def chat(
     settings: Settings = Depends(get_settings),
 ) -> ChatResponse:
     """
-    non-streaming chat completion,
-    returns the full response once generation is complete
+    non-streaming chat completion
+    Returns:
+        the full response once generation is complete
     """
     log.info("chat_start", session_id=req.session_id)
 
@@ -201,11 +202,11 @@ async def delete_session(
     session_id: str,
     ctx: ContextManager = Depends(get_context_manager),
 ) -> None:
-    """clear all memory for a session (start fresh)"""
+    """Clear all memory for a session (start fresh)."""
     ctx.delete_session(session_id)
     log.info("session_cleared_via_api", session_id=session_id)
 
 
 def _sse(event: StreamEvent) -> str:
-    """formats a StreamEvent as a SSE string"""
+    """Formats a StreamEvent as a SSE string."""
     return f"data: {event.model_dump_json()}\n\n" # double newline coz SSE spec, browsers require it to delimit events

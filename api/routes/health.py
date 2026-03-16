@@ -19,8 +19,9 @@ async def health_check(
     settings: Settings = Depends(get_settings),
 ) -> HealthResponse:
     """
-    returns overall system health and per-component status,
     checks the llama.cpp server liveness and reports feature flag states
+    Returns:
+        overall system health and per-component status
     """
     # llm backend health check
     llm_healthy, llm_latency = await llm.health_check()
