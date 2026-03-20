@@ -28,14 +28,14 @@ from PIL import Image
 from pydantic import BaseModel
 from rembg import remove, new_session
 
-# ── logging ──────────────────────────────────────────────────────────────────
+# logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("image_processor")
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
+# FastAPI app
 app = FastAPI(title="Avatar Image Processor", version="0.1.0")
 
 app.add_middleware(
@@ -51,7 +51,7 @@ _SESSION = new_session("u2net")
 log.info("rembg model ready.")
 
 
-# ── request / response models ─────────────────────────────────────────────────
+# request / response models
 class ImageRequest(BaseModel):
     image_url: str | None = None
     image_path: str | None = None
@@ -65,7 +65,7 @@ class ImageResponse(BaseModel):
     elapsed_ms: float
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# helpers
 def _remove_bg(raw_bytes: bytes) -> bytes:
     """Run rembg background removal and return PNG bytes."""
     result = remove(raw_bytes, session=_SESSION)
@@ -76,7 +76,8 @@ def _remove_bg(raw_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
-# ── routes ────────────────────────────────────────────────────────────────────
+# routes
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "image_processor"}
@@ -88,7 +89,7 @@ async def process_image(req: ImageRequest):
     raw: bytes | None = None
     source: str = ""
 
-    # ── 1. Resolve input ──────────────────────────────────────────────────────
+    # 1. resolve input
     if req.image_base64:
         source = "base64"
         log.info("Processing image from base64 input..")
