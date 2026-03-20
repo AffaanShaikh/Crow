@@ -1,5 +1,5 @@
 """
-FastAPI app for the local AI,
+FastAPI app entry point,
     startup sequence:
         1. Logging configured
         2. LLM client initialised (connects to llama-server)
@@ -82,10 +82,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.mcp_enabled:
         from mcp.registry import init_registry
         from mcp.dispatcher import ToolDispatcher
+        from mcp.router import init_router
         from mcp.agent_loop import init_agent_loop
         registry = init_registry()
         dispatcher = ToolDispatcher(registry, dry_run=settings.mcp_dry_run)
-        init_agent_loop(llm_client, dispatcher, registry)
+        router = init_router(llm_client, registry)
+        init_agent_loop(llm_client, dispatcher, registry, router)
         log.info("mcp_ready", tools=len(registry), dry_run=settings.mcp_dry_run)
     else:
         log.info("mcp_disabled")

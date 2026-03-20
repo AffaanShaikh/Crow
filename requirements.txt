@@ -17,7 +17,8 @@ structlog==24.4.0
 faster-whisper==1.1.0
 # PyTorch - install based on platform w/:-
 #   CPU:  pip install torch --index-url https://download.pytorch.org/whl/cpu
-#   CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   CUDA: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124S
+#         for my system, i ran: pip install --pre --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # tts
 kokoro==0.9.4
@@ -28,3 +29,6 @@ numpy==1.26.4
 google-api-python-client==2.155.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0 
+
+# img. processing
+rembg==2.0.69

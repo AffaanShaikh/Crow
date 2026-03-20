@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # app metadata
     app_name: str = "Crow"
-    app_version: str = "0.1.0"
+    app_version: str = "0.1.3"
     environment: Literal["development", "production"] = "development"
     log_level: str = "DEBUG"
     json_logs: bool = False # set True in production
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     tokens_per_word: float = 1.35
 
     # feature toggles aka kill-switches in case of heavy load
-    avatar_enabled: bool = True        
+    avatar_enabled: bool = False        
     tts_enabled: bool = False          
     asr_enabled: bool = False   
     mcp_enabled: bool = True        

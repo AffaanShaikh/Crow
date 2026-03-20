@@ -97,8 +97,18 @@ class TTSService:
     def _load_sync(self) -> None:
         try:
             from kokoro import KPipeline
-            self._pipeline = KPipeline(lang_code=self.lang_code)
-            log.info("kokoro_pipeline_ready", lang=self.lang_code)
+            # self._pipeline = KPipeline(lang_code=self.lang_code)
+            # log.info("kokoro_pipeline_ready", lang=self.lang_code)
+            try:
+                self._pipeline = KPipeline(lang_code=self.lang_code)
+                log.info("kokoro_pipeline_ready", device="cuda", lang=self.lang_code)   # try gpu or fallback to cpu 
+            except RuntimeError as e:
+                if "CUDA" in str(e):
+                    log.warning("kokoro_cuda_failed_fallback_cpu", error=str(e))        # CPU for TTS due to Pytorch incompatibility (124 doesn't support 5050 rtx i think)
+                    self._pipeline = KPipeline(lang_code=self.lang_code, device="cpu")
+                    log.info("kokoro_pipeline_ready", device="cpu", lang=self.lang_code)
+                else:
+                    raise
         except ImportError as exc:
             log.warning("kokoro_unavailable", error=str(exc),
                         hint="pip install kokoro soundfile")

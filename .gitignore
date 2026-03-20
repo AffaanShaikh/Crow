@@ -162,3 +162,5 @@ cython_debug/
 ve/
 garbage/ 
 *.json
+logs/
+demos/

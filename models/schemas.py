@@ -13,10 +13,10 @@ class Role(str, Enum):
     ASSISTANT = "assistant"
 
 class StreamEventType(str, Enum):
-    DELTA = "delta" # le partial token
-    DONE = "done" # stream finished
-    ERROR = "error" # something went wrong
-    METADATA = "metadata" # session info etc.
+    DELTA = "delta"         # le partial token
+    DONE = "done"           # stream finished
+    ERROR = "error"         # something went wrong
+    METADATA = "metadata"   # session info etc.
 
 class HealthStatus(str, Enum):
     OK = "ok"
