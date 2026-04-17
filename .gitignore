@@ -164,3 +164,7 @@ garbage/
 *.json
 logs/
 demos/
+tokens/
+token.json
+temp.txt
+data/

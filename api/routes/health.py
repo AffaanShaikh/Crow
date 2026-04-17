@@ -13,6 +13,26 @@ log = get_logger(__name__)
 router = APIRouter(prefix="/health", tags=["health"])
 
 
+async def _check_vector_db(settings) -> ComponentHealth:
+    """Check RAG vector DB and embedding model health."""
+    if not settings.rag_enabled:
+        return ComponentHealth(status=HealthStatus.OK, detail="disabled")
+    try:
+        from rag.vector_store import get_vector_store
+        from rag.embedder import get_embedder
+        store = get_vector_store()
+        cols = await store.list_collections()
+        embedder = get_embedder()
+        emb_ok, emb_msg = await embedder.health_check()
+        detail = f"ChromaDB: {len(cols)} collection(s) | Embedder: {emb_msg}"
+        st = HealthStatus.OK if emb_ok else HealthStatus.DEGRADED
+        return ComponentHealth(status=st, detail=detail)
+    except RuntimeError:
+        return ComponentHealth(status=HealthStatus.DEGRADED, detail="not initialised")
+    except Exception as exc:
+        return ComponentHealth(status=HealthStatus.DOWN, detail=str(exc)[:80])
+
+
 @router.get("", response_model=HealthResponse)
 async def health_check(
     llm: LLMClient = Depends(get_llm_client),
@@ -32,15 +52,11 @@ async def health_check(
             detail=settings.llm_base_url,
             latency_ms=round(llm_latency, 1),
         ),
-        # stubs for future components
-        "vector_db": ComponentHealth(
-            status=HealthStatus.OK,
-            detail="not initialised",
-        ),
-        "image_gen": ComponentHealth(
-            status=HealthStatus.OK if settings.avatar_enabled else HealthStatus.DEGRADED,
-            detail="ComfyUI" if not settings.avatar_enabled else "disabled via flag",
-        ),
+        "vector_db": await _check_vector_db(settings),
+        # "image_gen": ComponentHealth(
+        #     status=HealthStatus.OK if settings.avatar_enabled else HealthStatus.DEGRADED,
+        #     detail="Gen. AI" if not settings.avatar_enabled else "disabled via flag",
+        # ),
     }
 
     overall = (
@@ -59,6 +75,8 @@ async def health_check(
             "avatar": settings.avatar_enabled,
             "tts": settings.tts_enabled,
             "asr": settings.asr_enabled,
+            "mcp": settings.mcp_enabled,
             "rag": settings.rag_enabled,
+            "wake_word":  getattr(settings, "wake_word_enabled", False),
         },
     )

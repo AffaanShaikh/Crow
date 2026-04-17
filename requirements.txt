@@ -32,3 +32,29 @@ google-auth-httplib2==0.2.0
 
 # img. processing
 rembg==2.0.69
+
+# auth.
+cryptography==46.0.5
+httpx==0.28.0
+
+# vector db & doc. processing
+chromadb==1.5.5
+pypdf==6.9.2
+python-docx==1.2.0
+trafilatura==2.0.0
+python-multipart==0.0.24
+
+# packaging and wakeword dependencies
+pyinstaller==6.19.0
+pystray==0.19.5
+pillow==12.0.0
+platformdirs==4.9.4
+pyaudio==0.2.14
+openwakeword==0.6.0
+# and for wake word models:-
+# python -m openwakeword.download_models --model hey_mycroft
+# OR in cmd:-
+#     py
+#     import openwakeword
+#     from openwakeword.model import Model
+#     openwakeword.utils.download_models("hey_mycroft")

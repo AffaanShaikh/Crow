@@ -60,6 +60,22 @@ CATEGORY_TRIGGERS: dict[str, list[str]] = {
         "delete.*event", "remove.*event", "update.*event", "edit.*event", # CRUD verbs next to time/event words
         "change.*time", "change.*date",
     ], 
+    ToolCategory.SPOTIFY.value: [
+        # Explicit controls
+        r"\bplay\b", r"\bpause\b", r"\bresume\b", r"\bskip\b",
+        r"\bnext\s+track\b", r"\bprevious\s+track\b", r"\bnext\s+song\b",
+        r"\bprev(ious)?\s+song\b", r"\bstop\s+music\b",
+        # Settings
+        r"\bshuffle\b", r"\brepeat\b", r"\bloop\b",
+        r"\bvolume\b",
+        # Object nouns
+        r"\bspotify\b", r"\bplaylist\b", r"\bsong\b", r"\btrack\b",
+        r"\balbum\b", r"\bartist\b",
+        # Query phrases
+        r"what.{0,15}(playing|song|track)",
+        r"(play|put on|queue)\s+(some\s+)?music",
+        r"play\s+(a\s+)?(song|track|album|playlist)",
+    ],
     # ToolCategory.SPOTIFY.value: [
     #     "play", "pause", "skip", "music", "song", "playlist", "shuffle",
     #     "volume", "spotify", "queue", "now playing",
@@ -74,26 +90,47 @@ CATEGORY_TRIGGERS: dict[str, list[str]] = {
 AMBIGUITY_WORD_THRESHOLD = 1
 
 # system prompt for Tier 2 routing strategy (llm classification)
-_CLASSIFIER_SYSTEM = """\
-Act as a request classifier. Given a user message, determine which tool \
-categories are needed to fulfill it.
+# _CLASSIFIER_SYSTEM = """\
+# Act as a request classifier. Given a user message, determine which tool \
+# categories are needed to fulfill it.
 
-Available categories and what they cover:
+# **Try to find if a given tool can fulfill the user's query and return that.**
+
+# Available categories and what they cover:
+# {categories}
+
+# IMPORTANT Rules:
+# - Return ONLY a JSON array of matching category names, e.g. ["calendar"]
+# - Return [] for greetings, opinions, general questions, personal conversation
+# - Return [] if the request can be answered from general knowledge alone
+# - Only include a category if the user is EXPLICITLY asking to read or modify that data
+
+# Examples for how you should answer:
+# "hello" -> []
+# "who are you?" -> []
+# "what should I eat today?" -> []
+# "list my calendar events" -> ["calendar"]
+# "am I free tomorrow afternoon?" -> ["calendar"]
+# "schedule a dentist appointment for Friday" -> ["calendar"] 
+# """
+_CLASSIFIER_SYSTEM = """\
+Act as a tool selector and executor. Given: User's recent message(s) and a 'tools' list. **Determine which tools can fulfill user's query/request. \
+Search thoroughly throughout the entire message(s) of the user to determine if he/she is trying to use one of the tools. \
+
+- Use ONLY tools from the tool list. \
+- Return ONLY a JSON array of matching category name only if tool name is in the list. \
+- Reason efficiently and quickly to answer.** \
+
+Tools list:
 {categories}
 
-Rules:
-- Return ONLY a JSON array of matching category names, e.g. ["calendar"]
-- Return [] for greetings, opinions, general questions, personal conversation
-- Return [] if the request can be answered from general knowledge alone
-- Only include a category if the user is EXPLICITLY asking to read or modify that data
-
-Examples:
+Examples for how you should answer:
 "hello" -> []
 "who are you?" -> []
-"what should I eat today?" -> []
-"list my calendar events" -> ["calendar"]
-"am I free tomorrow afternoon?" -> ["calendar"]
-"schedule a dentist appointment for Friday" -> ["calendar"] 
+"let's discuss movies" -> []
+"play some breakcore from my saved Breakcore playlist" -> ["spotify"]
+"will I be able to make it there tommorrow at 7 pm?" -> ["calendar"]
+"I wonder if I should take an umbrella with me" -> ["weather"] 
 """
 
 
@@ -123,14 +160,14 @@ class ToolRouter:
 
     # public api
 
-    async def get_tools_for_message(self, message: str) -> list[dict]:
+    async def get_tools_for_messages(self, messages: list[list[str]]) -> list[dict]:
         """
         Return OpenAI-format tool schemas relevant to this message.
         Returns [] for non-tool requests - agent loop becomes a plain chat call.
         """
-        categories = await self._classify(message)
+        categories = await self._classify(messages)
         if not categories:
-            log.debug("router_no_tools", message_preview=message[:60])
+            log.debug("router_no_tools", message_preview=messages[0][:60])
             return []
 
         tools: list[dict] = []
@@ -143,7 +180,7 @@ class ToolRouter:
 
         log.info(
             "router_decision",
-            message_preview=message[:60],
+            message_preview=messages[0][:60],
             matched_categories=categories,
             tools_injected=len(tools),
         )
@@ -151,22 +188,22 @@ class ToolRouter:
 
     # classification
 
-    async def _classify(self, message: str) -> list[str]:
+    async def _classify(self, messages: list[list[str]]) -> list[str]:
         """
         Two-tier classification.
             Tier 1: keyword match (~instant).
             Tier 2: LLM call (only for long ambiguous messages where tier 1 found nothing).
         """
         # Tier 1 - keyword
-        matched = self._keyword_match(message)
+        matched = self._keyword_match(messages[0]+messages[1])
         if matched:
             log.debug("router_tier1_keyword_match", categories=matched)
             return matched
 
         # Tier 2 - LLM
-        word_count = len(message.split())
-        if word_count > AMBIGUITY_WORD_THRESHOLD and self._category_descriptions: # ! try a more robust trigger
-            llm_result = await self._llm_classify(message)
+        word_count = len(messages[0].split() + messages[1].split())
+        if word_count > AMBIGUITY_WORD_THRESHOLD and self._category_descriptions:
+            llm_result = await self._llm_classify(messages)
             if llm_result:
                 log.debug("router_tier2_llm_match", categories=llm_result)
             return llm_result
@@ -192,9 +229,10 @@ class ToolRouter:
                     break  # one match per category is enough
         return matched
 
-    async def _llm_classify(self, message: str) -> list[str]:
+    async def _llm_classify(self, messages: list[list[str]]) -> list[str]:
         """
-        LLM classification: max_tokens=20, temp=0.0.
+        LLM-based classification for determining if any and which tools \
+        should be called based on user's last {limit} messages.
         Returns list of category names, or [] on any failure.
         """
         if not self._category_descriptions:
@@ -207,20 +245,45 @@ class ToolRouter:
         system = _CLASSIFIER_SYSTEM.format(categories=cat_lines)
 
         try:
-            response = await self.llm._client.chat.completions.create(
-                model=settings.llm_model_name,
-                messages=[
+            recent_messages=[
                     {"role": "system", "content": system},
-                    {"role": "user", "content": message},
-                ],
-                max_tokens=30,
-                temperature=0.0,
-            )
+                    {"role": "user", "content": messages[0]},
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": messages[1]},
+                ]
+            params = {                                      # thinking params:-
+                "model":       settings.llm_model_name,
+                "messages":    recent_messages,
+                "max_tokens":  512,
+                "temperature": 0.6,
+                "top_p":       settings.default_top_p,
+            }
+            extra_body = {}
+            extra_body["top_k"] = 20
+            extra_body["min_p"] = 0
+            extra_body["reasoning_effort"] = "low"
+            if extra_body:
+                params["extra_body"] = extra_body
+    
+            log.info("params to _llm_classify", params=params)
+            response = await self.llm._client.chat.completions.create(**params)
+            #     model=settings.llm_model_name,
+            #     messages=[
+            #         {"role": "system", "content": system},
+            #         {"role": "user", "content": messages[0]},
+            #         {"role": "system", "content": system},
+            #         {"role": "user", "content": messages[1]},
+            #     ],
+            #     max_tokens=50,
+            #     temperature=0.1,
+            # )
+
             raw = (response.choices[0].message.content or "").strip()
             # strip any markdown code fences the model might add
             # raw = re.sub(r"```[a-z]*\n?|\n?```", "", raw).strip()
             # result = json.loads(raw)
             # return [str(c) for c in result] if isinstance(result, list) else []
+            log.info("_llm_classify response", response)
             return _parse_classifier_response(raw)
         except Exception as exc:
             log.warning("router_llm_classify_failed", error=str(exc))
@@ -254,7 +317,7 @@ def _parse_classifier_response(raw: str) -> list[str]:
         return []
 
     # strip markdown code fences if present
-    cleaned = re.sub(r"```[a-z]*\s*|\s*```", "", raw).strip()
+    cleaned = re.sub(r"'```[a-z]*\s*|\s*```'", "", raw).strip()
 
     # direct parse
     try:
@@ -280,7 +343,7 @@ def _parse_classifier_response(raw: str) -> list[str]:
         if cat.value in cleaned.lower():
             return [cat.value]
 
-    log.debug("router_classify_unparseable", raw=raw[:100])
+    log.debug("router_classify_unparseable", raw=raw)#[:100])
     return []
 
 

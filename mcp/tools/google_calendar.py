@@ -57,7 +57,7 @@ log = get_logger(__name__)
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 # Port for the local OAuth callback server.
 # Must match the redirect URI registered in Google Console for web credentials.
-OAUTH_REDIRECT_PORT = 8085
+OAUTH_REDIRECT_PORT = 8000#8085
 
 # a Google Calendar event_id(s): 26 lowercase alphanumeric chars (base32-ish),
     # anything containing spaces, mixed case words, or >60 chars is almost certainly
@@ -495,7 +495,7 @@ class GetCalendarEventTool(BaseTool):
             name="get_calendar_event",
             description=(
                 "Fetch complete details of one calendar event by its real ID. "
-                "Use after list_calendar_events to get full description, attendees, "
+                "Use after list_calendar_events to get event_id, description and attendees. "
                 "and Google Meet link. Do NOT call with a made-up or guessed ID."
             ),
             parameters=ToolParameters(
@@ -552,7 +552,7 @@ class CreateCalendarEventTool(BaseTool):
                 "Create a new event in the user's Google Calendar. "
                 "start_time and end_time MUST be ISO 8601 - compute them from the current "
                 "UTC time in your instructions. For all-day events use 'YYYY-MM-DD'. "
-                "attendees: only include explicitly provided email addresses containing @. "
+                "attendees: only include explicitly provided email addresses that contain @. Leave empty if None provided"
                 "add_google_meet: True ONLY when user explicitly requests a video/online meeting. "
                 "NEVER set add_google_meet=True for physical location events."
             ),

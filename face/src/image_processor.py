@@ -46,7 +46,7 @@ app.add_middleware(
 )
 
 # Pre-load the rembg session once so the first request is fast
-log.info("Loading rembg model (u2net)..")
+log.info("Loading rembg model (u2net)...")
 _SESSION = new_session("u2net")
 log.info("rembg model ready.")
 
@@ -92,7 +92,7 @@ async def process_image(req: ImageRequest):
     # 1. resolve input
     if req.image_base64:
         source = "base64"
-        log.info("Processing image from base64 input..")
+        log.info("Processing image from base64 input...")
         try:
             raw = base64.b64decode(req.image_base64)
         except Exception as exc:
@@ -127,7 +127,7 @@ async def process_image(req: ImageRequest):
         )
 
     # bg removal
-    log.info("Removing background (source=%s, size=%d bytes)..", source, len(raw))
+    log.info("Removing background (source=%s, size=%d bytes)...", source, len(raw))
     try:
         processed = _remove_bg(raw)
     except Exception as exc:

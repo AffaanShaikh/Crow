@@ -11,6 +11,33 @@ Reasons for the 2 Phases arch.:-
 
 The loop can run multiple cycles ("turns" internally) when the llm calls tools in sequence.
 
+ARCHITECTURE
+────────────
+                    user message
+                         │
+                    ToolRouter
+              (keyword + LLM classify)
+                         │
+           ┌─────────────┴─────────────┐
+       no tools                   tools matched
+           │                           │
+    Stream persona direct       Phase 1: Tool Orchestration
+    (DELTA per token)           ─────────────────────────────
+           │                   Stripped context, temp=0.0
+           │                   Loop until no more tool_calls
+           │                           │
+           │                  Phase 2: Streaming Synthesis
+           │                  ─────────────────────────────
+           │                  Full persona context
+           │                  Inject: live tool results
+           │                  Persona temperature
+           │                  (DELTA per token)
+           │                           │
+           └─────────────┬─────────────┘
+                    FINAL AgentStep
+              (content = complete assembled text,
+               used for memory - NOT re-emitted)
+
 Loop behaviour:
   1. Build messages + inject agent system addendum
   2. Call llm with tools schema
@@ -30,6 +57,7 @@ Streaming support:
 
 from __future__ import annotations
 
+import re
 import json 
 from collections.abc import AsyncIterator
 from typing import Any
@@ -37,7 +65,7 @@ from typing import Any
 from config import get_settings
 from mcp.dispatcher import ToolDispatcher, parse_tool_calls_from_response
 from mcp.registry import ToolRegistry
-from mcp.router import ToolRouter
+from mcp.router import ToolRouter#, get_tools_for_messages
 from mcp.schemas import AgentResponse, AgentStep, AgentStepType
 from models.schemas import Message, Role
 from utils.logger import get_logger
@@ -47,6 +75,9 @@ settings = get_settings()
 
 MAX_ITERATIONS = 8              # hard cap on tool-call cycles per user message
 MAX_TOOL_CALLS_PER_STEP = 5     # max parallel tool calls in one iteration
+
+# # Qwen3 think-tag patterns
+# _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 # Phase 1 system prompt: tool orchestration only
 # Built dynamically so the current UTC time is always injected
@@ -59,6 +90,12 @@ def _build_orchestration_system() -> str:
     return (
         f"You are a precise tool-calling agent. Call tools correctly to fulfill the request.\n\n"
         f"CURRENT UTC TIME: {now.strftime('%A %Y-%m-%d %H:%M')} UTC\n\n"
+        "GENERAL RULES:\n"
+        "- DO NOT write conversational text - ONLY call tools\n"
+        "- Required parameters must come from the user message or prior tool results\n"
+        "- Omit optional parameters the user did not provide (never pass empty strings)\n"
+        "- Stop calling tools once you have all necessary data\n"
+        "RULES FOR TOOLS:-"
         "DATETIME RULES (critical):\n"
         "- All datetime fields MUST be ISO 8601: YYYY-MM-DDTHH:MM:SS+00:00\n"
         "- Use the current UTC time above to compute dates from user language:\n"
@@ -79,28 +116,27 @@ def _build_orchestration_system() -> str:
         "- NEVER invent, guess, or use an event title as event_id\n"
         "- For update or delete: call list_calendar_events FIRST to get the real event_id,\n"
         "  then call update/delete with that id\n\n"
-        "GENERAL RULES:\n"
-        "- Do not write conversational text - only call tools\n"
-        "- Required parameters must come from the user message or prior tool results\n"
-        "- Omit optional parameters the user did not provide (never pass empty strings)\n"
-        "- Stop calling tools once you have all necessary data\n"
     )
-TOOL_ORCHESTRATION_SYSTEM = _build_orchestration_system()
 
 
 # Phase 2 synthesis injection: appended to persona context,
 # injected as a system message immediately before the user's message so the
 # persona LLM sees: [persona system] -> [history] -> [tool context] -> [user msg]
 
+# SYNTHESIS_CONTEXT_TEMPLATE = """\
+# Today is {today_utc} (UTC).
+
+# The following data was retrieved live to answer the user's request.
+# Report ONLY what appears in the data below - do not add, invent, or recall any \
+# events, items, or details that are not explicitly listed here.
+# If the results are empty, say so honestly.
+# Answer in your own voice and persona. Do not mention that you used a tool.
+
+# {tool_summary}
+# """
 SYNTHESIS_CONTEXT_TEMPLATE = """\
-Today is {today_utc} (UTC).
-
-The following data was retrieved live to answer the user's request.
-Report ONLY what appears in the data below - do not add, invent, or recall any \
-events, items, or details that are not explicitly listed here.
-If the results are empty, say so honestly.
-Answer in your own voice and persona. Do not mention that you used a tool.
-
+TOOLS RETURNED RESULTS:- \
+Today is {today_utc} (UTC). \
 {tool_summary}
 """
 
@@ -134,13 +170,12 @@ class AgentLoop:
         dispatcher: ToolDispatcher,
         registry: ToolRegistry,
         router: ToolRouter,
-        max_iterations: int = MAX_ITERATIONS,
     ) -> None:
         self.llm = llm_client
         self.dispatcher = dispatcher
         self.registry = registry
         self.router = router
-        self.max_iterations = max_iterations
+        self.max_iterations = settings.mcp_max_iterations
 
     # non-streaming run
 
@@ -154,15 +189,18 @@ class AgentLoop:
         Blocks until the LLM produces a final answer with no more tool calls.
         """
         steps: list[AgentStep] = []
-        final_text: list[str] = []
+        # final_text: list[str] = []
+        final_text = ""
 
         async for step in self.run_streaming(messages, session_id):
             steps.append(step)
             if step.type == AgentStepType.FINAL and step.content:
-                final_text.append(step.content)
+                # final_text.append(step.content)
+                final_text = step.content  # authoritative assembled text
 
         return AgentResponse(
-            final_answer="".join(final_text) or "Unable to complete this request.",
+            # final_answer="".join(final_text) or "Unable to complete this request.",
+            final_answer=final_text or "Unable to complete this request.",
             steps=steps,
             total_tool_calls=sum(1 for s in steps if s.type == AgentStepType.TOOL_CALL),
             session_id=session_id,
@@ -189,9 +227,10 @@ class AgentLoop:
         """
         # user's latest message extracted for routing
         last_user_msg = _last_user_message(messages)
-
+        last_user_msg_two = _last_user_messages(messages, limit=2)
+        # log.info("users_last_two_messages", last_user_msg_two)
         # Route: which tools does this message need?
-        relevant_tools = await self.router.get_tools_for_message(last_user_msg)
+        relevant_tools = await self.router.get_tools_for_messages(last_user_msg_two) #(last_user_msg)
 
         log.info(
             "agent_loop_start",
@@ -201,11 +240,74 @@ class AgentLoop:
             model=settings.llm_model_name,
         )
 
-        # path A: no tools needed -> direct persona response
+        # # path A: no tools needed -> direct persona response (streaming)
+        # if not relevant_tools:
+        #     log.debug("agent_direct_path_wStreaming", session_id=session_id)
+
+        #     full_response: list[str] = []
+        #     # log.info("messages in agent_direct_path_wStreaming", messages)
+        #     async for token in self._stream_persona_direct(messages):
+        #         full_response.append(token)
+        #         yield AgentStep(type=AgentStepType.DELTA, content=token)#.THINKING, content=token)
+
+        #     # log.info("full_response in agent_direct_path_wStreaming", full_response)
+        #     yield AgentStep(
+        #         type=AgentStepType.FINAL,
+        #         content="".join(full_response),
+        #     )
+        #     return
+        # path A: no tools -> RAG retrieval + stream through persona
         if not relevant_tools:
-            log.debug("agent_direct_path", session_id=session_id)
-            answer = await self._call_persona_direct(messages)
-            yield AgentStep(type=AgentStepType.FINAL, content=answer)
+            log.debug("agent_direct_path_streaming", session_id=session_id)
+
+            # RAG retrieval: inject context even on the direct path
+            rag_ctx: str | None = None
+            if settings.rag_enabled:
+                try:
+                    from rag.retriever import get_retriever
+                    rag_result = await get_retriever().retrieve(
+                        query=last_user_msg,
+                        collection=settings.rag_default_collection,
+                    )
+                    if rag_result.context_str:
+                        rag_ctx = rag_result.context_str
+                        log.info(
+                            "rag_context_injected_path_a",
+                            session_id=session_id,
+                            chunks=len(rag_result.results),
+                        )
+                except Exception as exc:
+                    log.warning("rag_retrieval_failed_path_a", error=str(exc))
+
+            # if RAG returned context, we rebuild messages with it injected
+            if rag_ctx:
+                from llm.prompt_builder import build_messages as _bm_a
+                from memory.context_manager import get_context_manager
+                last_msg = _last_user_message(messages)
+                history_a: list[dict] = []
+                msgs_a = list(messages)
+                i = 0
+                while i < len(msgs_a) - 1:
+                    if msgs_a[i].role == "user" and i + 1 < len(msgs_a) and msgs_a[i + 1].role == "assistant":
+                        history_a.append({"user": msgs_a[i].content, "assistant": msgs_a[i + 1].content})
+                        i += 2
+                    else:
+                        i += 1
+                log.info("history&summary run_streaming", history=history_a, rag_context=rag_ctx)
+                rag_messages = _bm_a(
+                    user_message=last_msg,
+                    history_turns=history_a,
+                    rag_context=rag_ctx,
+                )
+                use_messages = rag_messages
+            else:
+                use_messages = messages
+
+            full: list[str] = []
+            async for token in self._stream_persona_direct(use_messages):
+                full.append(token)
+                yield AgentStep(type=AgentStepType.DELTA, content=token)
+            yield AgentStep(type=AgentStepType.FINAL, content="".join(full))
             return
 
         # path B: tools needed -> Phase 1 (orchestration)
@@ -246,9 +348,13 @@ class AgentLoop:
                 )
                 break
 
-            # emit thinking text, if present
-            if text_content.strip():
-                yield AgentStep(type=AgentStepType.THINKING, content=text_content)
+            # # emit thinking text, if present
+            # if text_content.strip():
+            #     yield AgentStep(type=AgentStepType.THINKING, content=text_content)
+            # emit thinking text, if present (strip think tags first)
+            clean_thinking = (text_content).strip() # _strip_think_tags(text_content).strip()
+            if clean_thinking:
+                yield AgentStep(type=AgentStepType.THINKING, content=clean_thinking)
 
             # parse and emit tool call events
             calls = parse_tool_calls_from_response(response_msg)
@@ -274,21 +380,259 @@ class AgentLoop:
         else:
             log.warning("agent_max_iterations", session_id=session_id)
 
-        # Phase 2: final synthesis with persona,
-        # injects tool results into the full persona context, then calls the
-        # model at persona's temperature to sound like her
-        final_answer = await self._synthesise_with_persona(
-            messages, accumulated_results
-        )
+        # # Phase 2: final synthesis with persona, (non-streaming / .complete())
+        # # injects tool results into the full persona context, then calls the
+        # # model at persona's temperature to sound like her
+        # final_answer = await self._synthesise_with_persona(
+        #     messages, accumulated_results
+        # )
+        # log.info(
+        #     "agent_loop_done",
+        #     session_id=session_id,
+        #     answer_chars=len(final_answer),
+        #     tools_used=len(accumulated_results),
+        # )
+        # yield AgentStep(type=AgentStepType.FINAL, content=final_answer)
+
+
+        # # Phase 2: final synthesis with persona, (streaming)
+        # full_response: list[str] = []
+
+        # async for token in self._stream_synthesise_with_persona(
+        #     messages, accumulated_results
+        # ):
+        #     full_response.append(token)
+
+        #     yield AgentStep(
+        #         type=AgentStepType.DELTA,#.THINKING,
+        #         content=token,
+        #     )
+
+        # log.info(
+        #     "agent_loop_done_wStreaming",
+        #     session_id=session_id,
+        #     answer_chars=len(full_response),
+        #     tools_used=len(accumulated_results),
+        # )
+
+        # yield AgentStep(
+        #     type=AgentStepType.FINAL,
+        #     content="".join(full_response),
+        # )
+        # Phase 2: RAG retrieval + streaming synthesis
+        rag_context: str | None = None
+        if settings.rag_enabled:
+            try:
+                from rag.retriever import get_retriever
+                last_msg = _last_user_message(messages)
+                rag_result = await get_retriever().retrieve(
+                    query=last_msg,
+                    collection=settings.rag_default_collection,
+                )
+                if rag_result.context_str:
+                    rag_context = rag_result.context_str
+                    log.info(
+                        "rag_context_injected",
+                        session_id=session_id,
+                        chunks=len(rag_result.results),
+                        retrieval_ms=rag_result.retrieval_ms,
+                    )
+            except Exception as exc:
+                log.warning("rag_retrieval_failed", error=str(exc))
+
+        full: list[str] = []
+        async for token in self._stream_synthesise_with_persona(
+            messages, accumulated_results, rag_context=rag_context
+        ):
+            full.append(token)
+            yield AgentStep(type=AgentStepType.DELTA, content=token)
+
         log.info(
-            "agent_loop_done",
+            "agent_loop_done_wStreaming",
             session_id=session_id,
-            answer_chars=len(final_answer),
+            answer_chars=len(full),
             tools_used=len(accumulated_results),
         )
-        yield AgentStep(type=AgentStepType.FINAL, content=final_answer)
+        yield AgentStep(type=AgentStepType.FINAL, content="".join(full))
+
 
     # llm call helpers
+
+    # async def _call_persona_direct(self, messages: list[Message]) -> str:
+    #     """
+    #     No-tools path - full persona, streaming-compatible complete() call.
+    #     Uses persona temperature for natural, in-character responses.
+    #     """
+    #     text, _ = await self.llm.complete(
+    #         messages,
+    #         temperature=settings.default_temperature,
+    #         max_tokens=settings.default_max_tokens,
+    #     )
+    #     return text
+
+    async def _stream_persona_direct(
+        self,
+        messages: list[Message],
+    ) -> AsyncIterator[str]:
+        """
+        Path A: stream directly through the full persona context.
+        Filters qwen3 <think> blocks from the token stream.
+        """
+        log.info("stream direct persona", final_prompt_to_llm=messages)
+        raw_stream = self.llm.stream(       # non-thinking params:-
+            messages,
+            max_tokens=settings.default_max_tokens,
+            temperature=0.7, #settings.default_temperature,
+            top_p=0.8,
+            top_k=20,
+            min_p=0,
+            reasoning_effort="none"
+        )
+        async for token in raw_stream: # _strip_thinking(raw_stream):
+            yield token
+
+    # async def _synthesise_with_persona(
+    #     self,
+    #     original_messages: list[Message],
+    #     tool_results: list,
+    # ) -> str:
+    #     """
+    #     Phase 2 - inject tool results into the persona context, then call
+    #     at persona temperature so the final answer sounds like the character.
+
+    #     Message layout sent to llm looks like:-
+    #       [system (persona)]
+    #       [few-shot examples]
+    #       [conversation history]
+    #       [system (tool context injection)]     <- inserted here
+    #       [user (current message)]
+    #     """
+    #     if not tool_results:
+    #         # tools were routed but all failed or nothing was collected then,
+    #         # fall back to a direct response
+    #         return await self._call_persona_direct(original_messages)
+
+    #     from datetime import datetime, timezone as _tz
+    #     today_utc = datetime.now(_tz.utc).strftime("%A, %B %d %Y at %H:%M UTC")
+    #     tool_summary = _format_tool_results(tool_results)
+    #     injection_content = SYNTHESIS_CONTEXT_TEMPLATE.format(
+    #         today_utc=today_utc,
+    #         tool_summary=tool_summary
+    #     )
+
+    #     # the tool context injection inserted before the last user message
+    #     # so the model sees it as fresh context, not a system override
+    #     augmented: list[Message] = []
+    #     for i, msg in enumerate(original_messages):
+    #         # before the last user message, inject tool context
+    #         is_last = (i == len(original_messages) - 1)
+    #         if is_last and msg.role == "user":
+    #             augmented.append(
+    #                 Message(role=Role.SYSTEM, content=injection_content)
+    #             )
+    #         augmented.append(msg)
+
+    #     # lower temp for synthesis: keeps persona voice, prevent factual hallucination (coz higher val. is causing hallucinated ans.(s))
+    #     synthesis_temp = min(settings.default_temperature, 0.4)
+    #     text, _ = await self.llm.complete(
+    #         augmented,
+    #         temperature=synthesis_temp,
+    #         max_tokens=settings.default_max_tokens,
+    #     )
+    #     return text
+
+    async def _stream_synthesise_with_persona(
+        self,
+        original_messages: list[Message],
+        tool_results: list,
+        rag_context: str | None = None,
+    ) -> AsyncIterator[str]:
+        """
+        Phase 2 - inject tool results (and RAG context) into the full persona context, then stream
+        at reduced temperature to prevent factual hallucination while keeping voice.
+
+        Message layout:
+          [system: safety rules]
+          [system: persona]
+          [few-shot examples]
+          [conversation history]
+          [system: rag_context]             <- RAG retrieved documents (if any)
+          [system: tool context injection]  <- tool results (if any)
+          [user: current message]
+        """
+        if not tool_results and not rag_context:
+            # No enrichment - stream directly through persona
+            async for token in self._stream_persona_direct(original_messages):
+                yield token
+            return
+
+        from datetime import datetime, timezone as _tz
+        today_utc = datetime.now(_tz.utc).strftime("%A, %B %d %Y at %H:%M UTC")
+        r: str | None = ""  # !
+        raw_tool_results: str | None = f"raw tool(s) output: {r}"
+        raw_tool_results.format(r=tool_results)
+        tool_summary = _format_tool_results(tool_results) + raw_tool_results
+
+        injection_content = SYNTHESIS_CONTEXT_TEMPLATE.format(
+            today_utc=today_utc,
+            tool_summary=tool_summary
+        )
+
+        # augmented: list[Message] = []
+        # for i, msg in enumerate(original_messages):
+        #     is_last = (i == len(original_messages) - 1)
+        #     if is_last and msg.role == "user":
+        #         augmented.append(
+        #             Message(role=Role.SYSTEM, content=injection_content)
+        #         )
+        #     augmented.append(msg)
+        # build_messages to get the properly layered message list,
+        # injecting both RAG context and tool results via their respective slots:-
+        from llm.prompt_builder import build_messages as _bm
+        from memory.context_manager import get_context_manager
+
+        # extract last user message for rebuild
+        last_user = _last_user_message(original_messages)
+        history: list[dict] = []
+        summary: str | None = None
+        # reconstruct history from original_messages (skip system and last user)
+        i = 0
+        msgs = list(original_messages)
+        while i < len(msgs) - 1:
+            if msgs[i].role == "user" and i + 1 < len(msgs) and msgs[i + 1].role == "assistant":
+                history.append({"user": msgs[i].content, "assistant": msgs[i + 1].content})
+                i += 2
+            else:
+                i += 1
+        log.info("history&summary stream synthe", history=history, rag_context=rag_context)
+        augmented = _bm(
+            user_message=last_user,
+            history_turns=history,
+            summary=summary,
+            rag_context=rag_context,
+        )
+        # append tool injection as an additional system message before the last user msg
+        from models.schemas import Message as _Msg, Role as _Role
+        final_user = augmented.pop() # remove the last USER message temporarily
+        augmented.append(_Msg(role=_Role.SYSTEM, content=injection_content))
+        augmented.append(final_user) # put it back last
+
+        # Slightly lower temp: keeps persona voice, reduces factual invention
+        # synthesis_temp = min(settings.default_temperature, 0.4)
+        log.info("stream synthesize persona", final_prompt_to_llm=augmented)
+        raw_stream = self.llm.stream(               # thinking params:-
+            augmented,
+            max_tokens=settings.default_max_tokens,
+            temperature=0.6, #synthesis_temp,
+            top_p=0.95,
+            top_k=20,
+            min_p=0,
+            reasoning_effort="low"
+        )
+        async for token in raw_stream: # _strip_thinking(raw_stream):
+            yield token
+
+# non-streaming tool call
 
     async def _call_for_tools(
         self,
@@ -298,20 +642,40 @@ class AgentLoop:
         """
         Phase 1 call - stripped context, temp=0.0, tool_choice=auto.
         Returns the raw response dict including tool_calls.
+        - Optionally, strips qwen3 <think> blocks from response content.
         """
         # the llm call with tool info. injected messages for retrieving tool_calls
+        # extra_body: dict = {"repeat_penalty": settings.default_repeat_penalty, "think": True}
+        extra_body = {}
+        extra_body["top_k"] = 20
+        extra_body["min_p"] = 0
+        extra_body["reasoning_effort"] = "none"
+
         response = await self.llm._client.chat.completions.create(
-            model=settings.llm_model_name,
+            # model=settings.llm_model_name,
+            # messages=messages,
+            # tools=tools,
+            # tool_choice="auto",
+            # max_tokens=512,
+            # temperature=0.0,    # deterministic tool selection
+            # extra_body=extra_body,
+            model=settings.llm_model_name,      # non-thinking params:-
             messages=messages,
             tools=tools,
-            tool_choice="auto",
-            max_tokens=512,
-            temperature=0.0,    # deterministic tool selection
+            tool_choice="auto", 
+            max_tokens=512,     # settings.default_max_tokens,
+            temperature=0.7,    # 0.7 or 0.0 deterministic tool selection
+            top_p=0.8,
+
+            # temperature=0.6,    # thinking params. + set reasoning_effort to 'high'
+            # top_p=0.95,
+            # extra_body=extra_body,
         )
+        log.info("callfortools_response", response)
         msg = response.choices[0].message
         result: dict[str, Any] = {
             "role": "assistant",
-            "content": msg.content or "",
+            "content": msg.content or "", # _strip_think_tags(msg.content or ""),
             "tool_calls": [],
         }
         if msg.tool_calls:
@@ -333,67 +697,74 @@ class AgentLoop:
         )
         return result
 
-    async def _call_persona_direct(self, messages: list[Message]) -> str:
-        """
-        No-tools path - full persona, streaming-compatible complete() call.
-        Uses persona temperature for natural, in-character responses.
-        """
-        text, _ = await self.llm.complete(
-            messages,
-            temperature=settings.default_temperature,
-            max_tokens=settings.default_max_tokens,
-        )
-        return text
 
-    async def _synthesise_with_persona(
-        self,
-        original_messages: list[Message],
-        tool_results: list,
-    ) -> str:
-        """
-        Phase 2 - inject tool results into the persona context, then call
-        at persona temperature so the final answer sounds like the character.
+# for Qwen3(.5) think-tag filtering - not using currently
 
-        Message layout sent to llm looks like:-
-          [system (persona)]
-          [few-shot examples]
-          [conversation history]
-          [system (tool context injection)]     <- inserted here
-          [user (current message)]
-        """
-        if not tool_results:
-            # tools were routed but all failed or nothing was collected then,
-            # fall back to a direct response
-            return await self._call_persona_direct(original_messages)
+# def _strip_think_tags(text: str) -> str:
+#     """Removes all <think>...</think> blocks from a complete string."""
+#     return _THINK_BLOCK_RE.sub("", text).strip()
 
-        from datetime import datetime, timezone as _tz
-        today_utc = datetime.now(_tz.utc).strftime("%A, %B %d %Y at %H:%M UTC")
-        tool_summary = _format_tool_results(tool_results)
-        injection_content = SYNTHESIS_CONTEXT_TEMPLATE.format(
-            today_utc=today_utc,
-            tool_summary=tool_summary
-        )
+# async def _strip_thinking(token_stream: AsyncIterator[str]) -> AsyncIterator[str]:
+#     """
+#     Filters <think>...</think> blocks from a live token stream.
 
-        # the tool context injection inserted before the last user message
-        # so the model sees it as fresh context, not a system override
-        augmented: list[Message] = []
-        for i, msg in enumerate(original_messages):
-            # before the last user message, inject tool context
-            is_last = (i == len(original_messages) - 1)
-            if is_last and msg.role == "user":
-                augmented.append(
-                    Message(role=Role.SYSTEM, content=injection_content)
-                )
-            augmented.append(msg)
+#     Handles tags split across multiple tokens using a partial-match buffer:
+#     if the end of the accumulated buffer looks like the start of a tag,
+#     we hold it until the next token confirms or denies.
+#     """
+#     OPEN = "<think>"
+#     CLOSE = "</think>"
+#     buf = ""
+#     inside = False
 
-        # lower temp for synthesis: keeps persona voice, prevent factual hallucination (coz higher val. is causing hallucinated ans.(s))
-        synthesis_temp = min(settings.default_temperature, 0.4)
-        text, _ = await self.llm.complete(
-            augmented,
-            temperature=synthesis_temp,
-            max_tokens=settings.default_max_tokens,
-        )
-        return text
+#     async for token in token_stream:
+#         buf += token
+
+#         while buf:
+#             if inside:
+#                 # drain until </think>
+#                 idx = buf.find(CLOSE)
+#                 if idx >= 0:
+#                     buf = buf[idx + len(CLOSE):]
+#                     inside = False
+#                 else:
+#                     keep = _partial_suffix(buf, CLOSE)
+#                     buf = buf[-keep:] if keep else ""
+#                     break
+#             else:
+#                 # scan for <think>
+#                 idx = buf.find(OPEN)
+#                 if idx >= 0:
+#                     before = buf[:idx]
+#                     if before:
+#                         yield before
+#                     buf = buf[idx + len(OPEN):]
+#                     inside = True
+#                 else:
+#                     keep = _partial_suffix(buf, OPEN)
+#                     if keep:
+#                         safe = buf[:-keep]
+#                         if safe:
+#                             yield safe
+#                         buf = buf[-keep:]
+#                     else:
+#                         yield buf
+#                         buf = ""
+#                     break
+
+#     # flush remaining content if not inside a think block
+#     if buf and not inside:
+#         yield buf
+
+# def _partial_suffix(text: str, tag: str) -> int:
+#     """
+#     Returns the length of the longest prefix of 'tag' that is a suffix of 'text'.
+#     Used to hold a potential partial tag in the buffer across tokens.
+#     """
+#     for n in range(min(len(tag) - 1, len(text)), 0, -1):
+#         if text.endswith(tag[:n]):
+#             return n
+#     return 0
 
 
 # helper func.(s)
@@ -404,6 +775,17 @@ def _last_user_message(messages: list[Message]) -> str:
         if msg.role == "user":
             return msg.content
     return ""
+def _last_user_messages(messages: list[Message], limit: int = 2) -> list[str]:
+    """Returns the content of the last 'limit' user-role messages, newest last."""
+    user_messages: list[str] = []
+
+    for msg in reversed(messages):
+        if msg.role == "user":
+            user_messages.append(msg.content)
+            if len(user_messages) == limit:
+                break
+
+    return list(reversed(user_messages))
 
 def _format_tool_results(results: list) -> str:
     """
@@ -442,4 +824,5 @@ def init_agent_loop(
 ) -> AgentLoop:
     global _agent_loop
     _agent_loop = AgentLoop(llm_client, dispatcher, registry, router)
+    log.info("agent_loop_init", max_iterations=_agent_loop.max_iterations)
     return _agent_loop

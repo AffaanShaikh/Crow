@@ -192,7 +192,7 @@ def validate_range(
     corrected = False
     if t_max <= t_min:
         notes.append(
-            f"time_max ({t_max.isoformat()[:19]}) ≤ time_min, "
+            f"time_max ({t_max.isoformat()[:19]}) <= time_min, "
             f"set to min + {default_days}d."
         )
         t_max = t_min + timedelta(days=default_days)

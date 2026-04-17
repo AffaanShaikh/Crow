@@ -159,10 +159,11 @@ def init_registry() -> ToolRegistry:
     global _registry
     _registry = ToolRegistry()
 
-    # register tools
+    # Tools Registry
 
-    # import here to avoid circular imports and keep startup lazy
+    # Google (Calendar API) tools
     try:
+        # import here to avoid circular imports and keep startup lazy
         from mcp.tools.google_calendar import (
             ListCalendarEventsTool,
             CreateCalendarEventTool,
@@ -203,6 +204,41 @@ def init_registry() -> ToolRegistry:
     except Exception as exc:
         log.warning("google_calendar_tools_failed", error=str(exc),
                     hint="Check Google API credentials and install google-api-python-client")
+
+
+    # Spotify tools
+    try:
+        from mcp.tools.spotify import (
+            SpotifyGetPlaybackTool, SpotifyPlayTool, SpotifyPauseTool,
+            SpotifyNextTrackTool, SpotifyPreviousTrackTool, SpotifySetRepeatTool,
+            SpotifySetShuffleTool, SpotifySetVolumeTool, SpotifySearchTool,
+            SpotifyGetPlaylistsTool,
+        )
+        for tool, destructive, timeout in [
+            (SpotifyGetPlaybackTool(),    False, 10.0),
+            (SpotifyPlayTool(),           False, 10.0),
+            (SpotifyPauseTool(),          False, 10.0),
+            (SpotifyNextTrackTool(),      False, 10.0),
+            (SpotifyPreviousTrackTool(),  False, 10.0),
+            (SpotifySetRepeatTool(),      False, 10.0),
+            (SpotifySetShuffleTool(),     False, 10.0),
+            (SpotifySetVolumeTool(),      False, 10.0),
+            (SpotifySearchTool(),         False, 15.0),
+            (SpotifyGetPlaylistsTool(),   False, 15.0),
+        ]:
+            _registry.register(
+                tool,
+                category=ToolCategory.SPOTIFY,
+                requires_auth=True,
+                is_destructive=destructive,
+                timeout_seconds=timeout,
+            )
+        log.info("spotify_tools_registered")
+    except Exception as exc:
+        log.warning("spotify_tools_failed", error=str(exc),
+                    hint="Set SPOTIFY_CLIENT_ID in .env and ensure httpx is installed")
+
+
 
     log.info("tool_registry_ready", total_tools=len(_registry))
     return _registry

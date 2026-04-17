@@ -1,7 +1,8 @@
 """
-Automatic Speech Recognition (ASR) service,
-- using faster-whisper, a CTranslate2-optimised reimplementation of OpenAI Whisper
-that runs 2-4x faster than the original at equal accuracy, with lower memory usage
+Automatic Speech Recognition (ASR) service, 
+- using faster-whisper (available languages: https://whisper-api.com/docs/languages/), 
+ a CTranslate2-optimised reimplementation of OpenAI Whisper that runs 2-4x faster than the original at equal accuracy,
+ with lower memory usage.
 
 Two usage modes:-
   1. Streaming:
@@ -38,7 +39,7 @@ settings = get_settings()
 # Whisper model tiers: trade off speed vs accuracy
 # tiny.en -> base.en -> small.en -> medium.en -> large-v3
 # for real-time: base.en (fast) or small.en (balanced)
-DEFAULT_MODEL_SIZE = "base.en"
+DEFAULT_MODEL_SIZE = "small" # "base.en"
 MAX_BUFFER_SECONDS = 30 # hard cap to prevent unbounded accumulation
 
 
@@ -190,7 +191,7 @@ class ASRService:
         is_final: bool = True,
     ) -> None:
         """runs Whisper in thread pool, emits result to session queue"""
-        if len(pcm_bytes) < 1600: # i.e. if < 50 ms: skip noise
+        if len(pcm_bytes) < 50:#1600: # i.e. if < 50 ms: skip noise
             return
         try:
             event = await self._transcribe_audio(pcm_bytes, is_final=is_final)
@@ -234,7 +235,7 @@ class ASRService:
             audio_f32,
             beam_size=5 if is_final else 1,     # faster beam for partial
             vad_filter=False,                   # already did our own VAD
-            language="en",                      # remove for multilingual
+            # language="en",                      # remove for multilingual
             condition_on_previous_text=False,   # prevents hallucination loops
             temperature=0.0,                    # greedy for speed
             no_speech_threshold=0.6,

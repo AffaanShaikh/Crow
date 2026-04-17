@@ -13,6 +13,7 @@ Run with:
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
+import asyncio
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -60,6 +61,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             hint="Make sure llama-server is running: ollama serve",
         )
 
+    # Wake word detector
+    if getattr(settings, "wake_word_enabled", False):
+        from audio.wake_word import init_wake_detector
+        detector = init_wake_detector()
+        loop = asyncio.get_event_loop()
+        detector.start(loop)
+        log.info("wake_word_ready", model=settings.wake_word_model)
+    else:
+        log.info("wake_word_disabled")
+
     # ASR
     if settings.asr_enabled:
         from audio.asr import init_asr_service
@@ -92,10 +103,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         log.info("mcp_disabled")
 
+    # RAG
+    if settings.rag_enabled:
+        from rag.vector_store import init_vector_store
+        from rag.embedder import init_embedder
+        from rag.ingester import init_ingester
+        from rag.retriever import init_retriever
+        await init_vector_store()
+        init_embedder()
+        init_ingester()
+        init_retriever()
+        # verify embedding model is available
+        from rag.embedder import get_embedder
+        ready, msg = await get_embedder().health_check()
+        if ready:
+            log.info("rag_ready", embedding_model=settings.rag_embedding_model)
+        else:
+            log.warning(
+                "rag_embedding_model_unavailable",
+                message=msg,
+                hint=f"Run: ollama pull {settings.rag_embedding_model}",
+            )
+    else:
+        log.info("rag_disabled")
+
     log.info("app_ready", host=settings.host, port=settings.port)
     yield  # <- application runs here
 
     log.info("app_shutting_down")
+    if getattr(settings, "wake_word_enabled", False):
+        try:
+            from audio.wake_word import get_wake_detector
+            get_wake_detector().stop()
+        except Exception:
+            pass
     shutdown_llm_client()
     log.info("app_stopped")
 
@@ -130,7 +171,7 @@ async def request_logging_middleware(request: Request, call_next) -> Response:
     response: Response = await call_next(request)
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    # don't spam logs with health-check noise 
+    # no spamming logs with health-check noise 
     if request.url.path not in ("/api/v1/health", "/"):
         log.info("http_request", method=request.method, path=request.url.path,
                  status=response.status_code, elapsed_ms=elapsed_ms)
@@ -149,20 +190,41 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-# routers
+# routers - registration order matters for OpenAPI docs but not for routing
+
+# /chat   - session management + non-streaming fallback (always registered)
+# /agent  - unified streaming endpoint, always registered when MCP is enabled
+#           (replaces the old /chat/stream - the agent route handles both
+#            conversational and tool-use paths via the ToolRouter)
+# /audio  - ASR WebSocket + TTS HTTP (registered when either flag is enabled)
+# /health - liveness probe
 
 app.include_router(chat.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
 
-# audio routes (registered only if enabled to keep import side-effects lazy)
-if settings.asr_enabled or settings.tts_enabled:
-    from api.routes.audio import router as audio_router
-    app.include_router(audio_router, prefix="/api/v1")
+# Auth routes: (Google, Spotify, ..), 
+# OAuth (always registered - no feature flag, since auth must work even if the tools themselves are disabled)
+from api.routes.auth import router as auth_router
+app.include_router(auth_router, prefix="/api/v1")
 
-# agent routes
+# Agent route: always registered when MCP is enabled,
+# ToolRouter inside handles Path A (direct persona) vs Path B (tools),
+# /chat/stream no longer registered - /agent/stream the only stream endpoint
 if settings.mcp_enabled:
     from api.routes.agent import router as agent_router
     app.include_router(agent_router, prefix="/api/v1")
+    
+# audio routes (registered only if enabled to keep import side-effects lazy)
+if settings.asr_enabled or settings.tts_enabled or getattr(settings, "wake_word_enabled", False):
+    from api.routes.audio import router as audio_router
+    from api.routes.wake_routes import register_wake_routes
+    register_wake_routes(audio_router)
+    app.include_router(audio_router, prefix="/api/v1")
+
+# RAG routes
+if settings.rag_enabled:
+    from api.routes.rag import router as rag_router
+    app.include_router(rag_router, prefix="/api/v1")
 
 
 @app.get("/", include_in_schema=False)

@@ -122,6 +122,7 @@ class AgentStepType(str, Enum):
     THINKING = "thinking"       # LLM reasoning before tool call
     TOOL_CALL = "tool_call"     # LLM decided to call a tool
     TOOL_RESULT = "tool_result" # tool execution result
+    DELTA = "delta"             # streaming response
     FINAL = "final"             # LLM produced final answer
 
 
@@ -152,6 +153,7 @@ class AgentResponse(BaseModel):
 
 class ToolCategory(str, Enum):
     CALENDAR = "calendar"
+    SPOTIFY = "spotify"
     COMMUNICATION = "communication"
     KNOWLEDGE = "knowledge"
     SYSTEM = "system"
