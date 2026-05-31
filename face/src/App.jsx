@@ -1,12 +1,33 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // config
-const API_BASE                = "http://localhost:8000/api/v1";
-const WS_BASE                 = "ws://localhost:8000/api/v1";
-const IMAGE_PROCESSOR_URL     = "http://localhost:8001/process-image";
-const SESSION_ID              = crypto.randomUUID();
-const DEFAULT_AI_IMAGE_URL    = "/src/assets/metaphor-refantazio-removebg-preview.png";
-const DEFAULT_USER_IMAGE_URL  = "/src/assets/i-really-love-the-portraits-from-metaphor-refantazio-so-v0-y945244wls9g1-removebg-preview.png";
+// const API_BASE                = "http://localhost:8000/api/v1";
+// const WS_BASE                 = "ws://localhost:8000/api/v1";
+// const IMAGE_PROCESSOR_URL     = "http://localhost:8001/process-image";
+// const SESSION_ID              = crypto.randomUUID();
+// const DEFAULT_AI_IMAGE_URL    = "/src/assets/metaphor-refantazio-removebg-preview.png";
+// const DEFAULT_USER_IMAGE_URL  = "/src/assets/i-really-love-the-portraits-from-metaphor-refantazio-so-v0-y945244wls9g1-removebg-preview.png";
+// When served from the same origin as the backend (packaged mode),
+// use relative URLs - no CORS involvement whatsoever.
+// In dev (Vite on 5173), fall back to absolute localhost URLs.
+const _DEV = window.location.port === '5173';
+
+const API_BASE = _DEV
+  ? 'http://localhost:8000/api/v1'
+  : `${window.location.origin}/api/v1`;
+
+const WS_BASE = _DEV
+  ? 'ws://localhost:8000/api/v1'
+  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/v1`;
+
+const IMAGE_PROCESSOR_URL = 'http://localhost:8001/process-image';
+const SESSION_ID          = crypto.randomUUID();
+
+// Images must live in face/public/
+const DEFAULT_AI_IMAGE_URL   = '/avatars/prop_Elda.png';
+const DEFAULT_USER_IMAGE_URL = '/avatars/prop_User.png';
+
+
 
 const ASR_SAMPLE_RATE   = 16000;
 const ASR_BUFFER_SIZE   = 4096;
@@ -285,31 +306,306 @@ function ThinkingBubble({ content }) {
   );
 }
 
+// ReasoningBubble 3 visual states:
+//  isStreaming=true,  reasoning=""     ->  pulsing "⬙ thinking" dots (waiting for first reasoning token)
+//  isStreaming=true,  reasoning="..."  ->  live tail: last 120 chars scroll past
+//  isStreaming=false, reasoning="..."  ->  collapsed pill -> click to expand inline
+//                                            -> ⤢ to open full modal
+//
+// isStreaming is (msg.streaming && msg.reasoningActive).
+// The moment the first content token arrives, reasoningActive flips false
+// and the bubble collapses to its pill state.
+function ReasoningBubble({ reasoning, isStreaming }) {
+  const [open,  setOpen]  = useState(false);
+  const [modal, setModal] = useState(false);
+  const wordCount = reasoning ? reasoning.trim().split(/\s+/).length : 0;
+
+  if (!reasoning && !isStreaming) return null;
+
+  // State 1: streaming, no tokens yet
+  if (isStreaming && !reasoning) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8,
+        padding: "7px 13px", maxWidth: 200,
+        border: "1px dashed var(--border)", borderLeft: "2px solid var(--purple)",
+        animation: "fadeSlideIn 0.2s ease both" }}>
+        <span style={{ color: "var(--purple)", fontFamily: "'Special Elite', monospace",
+          fontSize: "0.65rem", letterSpacing: "0.1em",
+          animation: "proc-pulse 1.1s ease-in-out infinite" }}>⬙ thinking</span>
+        <div style={{ display: "flex", gap: 4 }}>
+          {[0, 0.22, 0.44].map((d, i) => (
+            <div key={i} style={{ width: 5, height: 5, borderRadius: "50%",
+              background: "var(--purple)",
+              animation: `typing-dot 1.1s ${d}s ease-in-out infinite`, opacity: 0.7 }} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // State 2: streaming, tokens arriving - live tail
+  if (isStreaming && reasoning) {
+    const tail = reasoning.length > 120 ? "..." + reasoning.slice(-120) : reasoning;
+    return (
+      <div style={{ padding: "7px 13px", maxWidth: 260,
+        border: "1px dashed var(--border)", borderLeft: "2px solid var(--purple)",
+        animation: "fadeSlideIn 0.15s ease both" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+          <span style={{ color: "var(--purple)", fontFamily: "'Special Elite', monospace",
+            fontSize: "0.58rem", letterSpacing: "0.1em",
+            animation: "proc-pulse 1.3s ease-in-out infinite" }}>⬙ thinking</span>
+          <div style={{ width: 4, height: 4, borderRadius: "50%",
+            background: "var(--purple)", animation: "proc-pulse 0.9s ease-in-out infinite", opacity: 0.55 }} />
+        </div>
+        <div style={{ fontFamily: "'IM Fell English', serif", fontSize: "0.72rem",
+          fontStyle: "italic", color: "var(--text-muted)", lineHeight: 1.55,
+          wordBreak: "break-word" }}>{tail}</div>
+      </div>
+    );
+  }
+
+  // State 3: done - collapsed pill
+  return (
+    <>
+      <div style={{ maxWidth: 260, overflow: "hidden",
+        border: "1px dashed var(--border)", borderLeft: "2px solid var(--purple)",
+        animation: "fadeSlideIn 0.2s ease both" }}>
+        <button onClick={() => setOpen(o => !o)}
+          style={{ width: "100%", display: "flex", justifyContent: "space-between",
+            alignItems: "center", padding: "6px 13px",
+            background: open ? "rgba(45,31,94,0.18)" : "transparent",
+            border: "none", cursor: "pointer", transition: "background 0.15s" }}>
+          <span style={{ color: "var(--purple)", fontFamily: "'Special Elite', monospace",
+            fontSize: "0.6rem", letterSpacing: "0.1em" }}>
+            ◈ reasoned · {wordCount}w
+          </span>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button onClick={e => { e.stopPropagation(); setModal(true); }}
+              style={{ background: "transparent", border: "none", color: "var(--purple)",
+                cursor: "pointer", fontSize: "0.6rem",
+                fontFamily: "'Special Elite', monospace", padding: 0, opacity: 0.7 }}>⤢</button>
+            <span style={{ color: "var(--purple)", fontSize: "0.62rem", opacity: 0.8 }}>
+              {open ? "▴" : "▾"}
+            </span>
+          </div>
+        </button>
+        {open && (
+          <div style={{ padding: "7px 13px 10px",
+            borderTop: "1px dashed rgba(167,139,250,0.2)",
+            fontFamily: "'IM Fell English', serif", fontSize: "0.74rem",
+            fontStyle: "italic", color: "var(--text-dim)", lineHeight: 1.7,
+            whiteSpace: "pre-wrap", wordBreak: "break-word",
+            maxHeight: 200, overflowY: "auto" }}>
+            {reasoning}
+          </div>
+        )}
+      </div>
+
+      {modal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9100,
+          background: "rgba(10,0,4,0.92)", display: "flex",
+          alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setModal(false); }}>
+          <div style={{ width: "min(820px,92vw)", maxHeight: "86vh",
+            display: "flex", flexDirection: "column", background: "var(--bg2)",
+            border: "1px solid var(--purple)", borderTop: "3px solid var(--purple)",
+            animation: "modal-in 0.2s ease both" }}>
+            <div style={{ display: "flex", justifyContent: "space-between",
+              alignItems: "center", padding: "12px 18px",
+              borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+              <span style={{ fontFamily: "'Special Elite', monospace",
+                fontSize: "0.7rem", color: "var(--purple)", letterSpacing: "0.15em" }}>
+                ◈ REASONING TRACE · {wordCount} words ◈
+              </span>
+              <button onClick={() => setModal(false)}
+                style={{ background: "transparent", border: "1px solid var(--border)",
+                  color: "var(--text-muted)", padding: "2px 10px", cursor: "pointer",
+                  fontFamily: "'Special Elite', monospace", fontSize: "0.6rem",
+                  borderRadius: 2, transition: "all 0.2s" }}
+                onMouseEnter={e => { e.target.style.borderColor="var(--rose)"; e.target.style.color="var(--rose)"; }}
+                onMouseLeave={e => { e.target.style.borderColor="var(--border)"; e.target.style.color="var(--text-muted)"; }}>
+                ✕ close
+              </button>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px",
+              fontFamily: "'IM Fell English', serif", fontSize: "0.9rem",
+              lineHeight: 1.9, color: "var(--text-dim)",
+              whiteSpace: "pre-wrap", wordBreak: "break-word", fontStyle: "italic" }}>
+              {reasoning}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Handles: # headings, **bold**, *italic*, `inline code`, - bullets, newlines.
+// most common LLM markdown without any npm dependency
+function MarkdownText({ text }) {
+  if (!text) return null;
+
+  const parseInline = (str) => {
+    const parts = [];
+    // Combined regex: **bold**, *italic*, `code`
+    const re = /(\*\*|__)(.+?)\1|(\*|_)(.+?)\3|`([^`]+)`/g;
+    let last = 0, m;
+    while ((m = re.exec(str)) !== null) {
+      if (m.index > last) parts.push(str.slice(last, m.index));
+      if (m[1]) {
+        parts.push(<strong key={m.index}
+          style={{ color: "var(--gold-bright)", fontWeight: "bold" }}>{m[2]}</strong>);
+      } else if (m[3]) {
+        parts.push(<em key={m.index}
+          style={{ color: "var(--text-dim)", fontStyle: "italic" }}>{m[4]}</em>);
+      } else if (m[5]) {
+        parts.push(<code key={m.index} style={{
+          fontFamily: "'Special Elite', monospace", fontSize: "0.88em",
+          background: "rgb(216, 112, 0)", color: "var(--gold)",
+          padding: "1px 5px", borderRadius: 2,
+        }}>{m[5]}</code>);
+      }
+      last = m.index + m[0].length;
+    }
+    if (last < str.length) parts.push(str.slice(last));
+    return parts.length === 0 ? str
+         : parts.length === 1 && typeof parts[0] === "string" ? parts[0]
+         : parts;
+  };
+
+  const lines = text.split("\n");
+  return (
+    <div>
+      {lines.map((line, i) => {
+        if (line.startsWith("### "))
+          return <div key={i} style={{ color: "var(--gold)", fontWeight: "bold",
+            fontSize: "0.98rem", marginTop: 8, marginBottom: 2 }}>{parseInline(line.slice(4))}</div>;
+        if (line.startsWith("## "))
+          return <div key={i} style={{ color: "var(--gold-bright)", fontWeight: "bold",
+            fontSize: "1.05rem", marginTop: 10, marginBottom: 3 }}>{parseInline(line.slice(3))}</div>;
+        if (line.startsWith("# "))
+          return <div key={i} style={{ color: "var(--frame-gold)", fontWeight: "bold",
+            fontSize: "1.12rem", marginTop: 12, marginBottom: 4 }}>{parseInline(line.slice(2))}</div>;
+        if (line.match(/^[-*] /))
+          return <div key={i} style={{ display: "flex", gap: 6, marginTop: 2 }}>
+            <span style={{ color: "var(--gold-dim)", flexShrink: 0 }}>✦</span>
+            <span>{parseInline(line.slice(2))}</span>
+          </div>;
+        if (line.match(/^---+$/))
+          return <hr key={i} style={{ border: "none",
+            borderTop: "1px solid var(--border)", margin: "8px 0" }} />;
+        if (!line.trim())
+          return <div key={i} style={{ height: "0.55em" }} />;
+        return <div key={i}>{parseInline(line)}</div>;
+      })}
+    </div>
+  );
+}
+
+// function MessageBubble({ msg, status, avatarSrc, isAvatarProcessing }) {
+//   const isUser = msg.role === "user";
+//   const isActive = !!msg.streaming;
+//   const isOnline = status === "online";
+//   const borderCol = isUser ? "var(--crimson)" : "var(--frame-gold)";
+//   const accentCol = isUser ? "var(--rose)" : "var(--gold-bright)";
+//   const nameLabel = isUser ? "You" : "Elda";
+
+//   return (
+//     <div style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start", animation: "fadeSlideIn 0.25s ease both", marginBottom: 26, gap: 6 }}>
+//       <div style={{ marginLeft: isUser ? 0 : 8, marginRight: isUser ? 8 : 0 }}>
+//         <CharPortrait isUser={isUser} isStreaming={isActive} isOnline={isOnline} avatarSrc={avatarSrc} isProcessing={isAvatarProcessing} />
+//       </div>
+//       {msg.toolCalls?.map(tc => <ToolCallPill key={tc.call_id} toolName={tc.tool_name} done={tc.done} success={tc.success} />)}
+//       {msg.thinking && <ThinkingBubble content={msg.thinking} />}
+//       {(msg.content || msg.streaming) && (
+//         <div style={{ maxWidth: "73%", position: "relative", padding: 3, background: `linear-gradient(135deg, ${accentCol}44, ${borderCol}22)`, boxShadow: isActive ? `0 0 28px ${borderCol}66` : `0 2px 20px rgba(0,0,0,0.7)`, transition: "box-shadow 0.4s ease", clipPath: isUser ? "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%)" : "polygon(0 10px, 10px 0, 100% 0, 100% 100%, 0 100%)" }}>
+//           <div style={{ background: isUser ? "var(--user-bg)" : "var(--ai-bg)", padding: "14px 20px 12px", clipPath: isUser ? "polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%)" : "polygon(0 8px, 8px 0, 100% 0, 100% 100%, 0 100%)", borderTop: `2px solid ${borderCol}` }}>
+//             <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 9, fontFamily: "'UnifrakturMaguntia', serif", fontSize: isUser ? "0.88rem" : "1.05rem", color: accentCol, letterSpacing: "0.04em", animation: !isUser ? "gold-pulse 3.5s ease-in-out infinite" : "none", textShadow: `0 0 14px ${accentCol}55` }}>
+//               <span style={{ fontFamily: "'Special Elite', monospace", fontSize: "0.68rem", opacity: 0.65, letterSpacing: "0.06em" }}>🙮</span>
+//               {nameLabel}
+//             </div>
+//             <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "1.04rem", lineHeight: 1.8, color: "var(--text)", fontFamily: "'Special Elite', monospace" }}>
+//               {msg.content}
+//               {msg.streaming && <span style={{ display: "inline-block", width: 9, height: 16, background: "var(--gold)", marginLeft: 3, verticalAlign: "middle", animation: "blink 0.8s step-start infinite", opacity: 0.9 }} />}
+//             </div>
+//             <Timestamp ts={msg.ts} />
+//           </div>
+//         </div>
+//       )}
+//     </div>
+//   );
+// }
 function MessageBubble({ msg, status, avatarSrc, isAvatarProcessing }) {
-  const isUser = msg.role === "user";
-  const isActive = !!msg.streaming;
-  const isOnline = status === "online";
+  const isUser    = msg.role === "user";
+  const isActive  = !!msg.streaming;
+  const isOnline  = status === "online";
   const borderCol = isUser ? "var(--crimson)" : "var(--frame-gold)";
-  const accentCol = isUser ? "var(--rose)" : "var(--gold-bright)";
+  const accentCol = isUser ? "var(--rose)"    : "var(--gold-bright)";
   const nameLabel = isUser ? "You" : "Elda";
 
+  // Show reasoning bubble when: AI message AND (has reasoning text OR actively reasoning)
+  const showReasoning = !isUser && (msg.reasoning || (msg.streaming && msg.reasoningActive));
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start", animation: "fadeSlideIn 0.25s ease both", marginBottom: 26, gap: 6 }}>
-      <div style={{ marginLeft: isUser ? 0 : 8, marginRight: isUser ? 8 : 0 }}>
-        <CharPortrait isUser={isUser} isStreaming={isActive} isOnline={isOnline} avatarSrc={avatarSrc} isProcessing={isAvatarProcessing} />
+    <div style={{ display: "flex", flexDirection: "column",
+      alignItems: isUser ? "flex-end" : "flex-start",
+      animation: "fadeSlideIn 0.25s ease both", marginBottom: 26, gap: 6 }}>
+
+      {/* Portrait + ReasoningBubble in a horizontal row */}
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-end",
+        gap: 10, marginLeft: isUser ? 0 : 8, marginRight: isUser ? 8 : 0 }}>
+        <CharPortrait isUser={isUser} isStreaming={isActive} isOnline={isOnline}
+          avatarSrc={avatarSrc} isProcessing={isAvatarProcessing} />
+        {showReasoning && (
+          <div style={{ paddingBottom: 4 }}>
+            <ReasoningBubble
+              reasoning={msg.reasoning || ""}
+              isStreaming={!!msg.streaming && !!msg.reasoningActive} />
+          </div>
+        )}
       </div>
-      {msg.toolCalls?.map(tc => <ToolCallPill key={tc.call_id} toolName={tc.tool_name} done={tc.done} success={tc.success} />)}
+
+      {msg.toolCalls?.map(tc => (
+        <ToolCallPill key={tc.call_id} toolName={tc.tool_name}
+          done={tc.done} success={tc.success} />
+      ))}
       {msg.thinking && <ThinkingBubble content={msg.thinking} />}
+
       {(msg.content || msg.streaming) && (
-        <div style={{ maxWidth: "73%", position: "relative", padding: 3, background: `linear-gradient(135deg, ${accentCol}44, ${borderCol}22)`, boxShadow: isActive ? `0 0 28px ${borderCol}66` : `0 2px 20px rgba(0,0,0,0.7)`, transition: "box-shadow 0.4s ease", clipPath: isUser ? "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%)" : "polygon(0 10px, 10px 0, 100% 0, 100% 100%, 0 100%)" }}>
-          <div style={{ background: isUser ? "var(--user-bg)" : "var(--ai-bg)", padding: "14px 20px 12px", clipPath: isUser ? "polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%)" : "polygon(0 8px, 8px 0, 100% 0, 100% 100%, 0 100%)", borderTop: `2px solid ${borderCol}` }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 9, fontFamily: "'UnifrakturMaguntia', serif", fontSize: isUser ? "0.88rem" : "1.05rem", color: accentCol, letterSpacing: "0.04em", animation: !isUser ? "gold-pulse 3.5s ease-in-out infinite" : "none", textShadow: `0 0 14px ${accentCol}55` }}>
-              <span style={{ fontFamily: "'Special Elite', monospace", fontSize: "0.68rem", opacity: 0.65, letterSpacing: "0.06em" }}>🙮</span>
+        <div style={{ maxWidth: "73%", position: "relative", padding: 3,
+          background: `linear-gradient(135deg, ${accentCol}44, ${borderCol}22)`,
+          boxShadow: isActive ? `0 0 28px ${borderCol}66` : `0 2px 20px rgba(0,0,0,0.7)`,
+          transition: "box-shadow 0.4s ease",
+          clipPath: isUser
+            ? "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%)"
+            : "polygon(0 10px, 10px 0, 100% 0, 100% 100%, 0 100%)" }}>
+          <div style={{ background: isUser ? "var(--user-bg)" : "var(--ai-bg)",
+            padding: "14px 20px 12px",
+            clipPath: isUser
+              ? "polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%)"
+              : "polygon(0 8px, 8px 0, 100% 0, 100% 100%, 0 100%)",
+            borderTop: `2px solid ${borderCol}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 9,
+              fontFamily: "'UnifrakturMaguntia', serif",
+              fontSize: isUser ? "0.88rem" : "1.05rem", color: accentCol,
+              letterSpacing: "0.04em",
+              animation: !isUser ? "gold-pulse 3.5s ease-in-out infinite" : "none",
+              textShadow: `0 0 14px ${accentCol}55` }}>
+              <span style={{ fontFamily: "'Special Elite', monospace",
+                fontSize: "0.68rem", opacity: 0.65, letterSpacing: "0.06em" }}>🙮</span>
               {nameLabel}
             </div>
-            <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "1.04rem", lineHeight: 1.8, color: "var(--text)", fontFamily: "'Special Elite', monospace" }}>
-              {msg.content}
-              {msg.streaming && <span style={{ display: "inline-block", width: 9, height: 16, background: "var(--gold)", marginLeft: 3, verticalAlign: "middle", animation: "blink 0.8s step-start infinite", opacity: 0.9 }} />}
+
+            {/* MarkdownText replaces the plain {msg.content} text node */}
+            <div style={{ wordBreak: "break-word", fontSize: "1.04rem",
+              lineHeight: 1.8, color: "var(--text)",
+              fontFamily: "'Special Elite', monospace" }}>
+              <MarkdownText text={msg.content || ""} />
+              {msg.streaming && !msg.reasoningActive && (
+                <span style={{ display: "inline-block", width: 9, height: 16,
+                  background: "var(--gold)", marginLeft: 3, verticalAlign: "middle",
+                  animation: "blink 0.8s step-start infinite", opacity: 0.9 }} />
+              )}
             </div>
             <Timestamp ts={msg.ts} />
           </div>
@@ -349,7 +645,7 @@ function AuthConnectBtn({ label, connected, onLogin, onLogout }) {
 
 // RAG Panel Modal
 // Full-featured knowledge base management: upload, list, delete, test search,
-// a modal overlay when the user clicks "✦ Knowledge" in the sidebar.
+// a modal overlay for when the user clicks "✦ Knowledge" in the sidebar.
 function RAGModal({ onClose }) {
   const [docs,        setDocs]        = useState([]);
   const [uploading,   setUploading]   = useState(false);
@@ -659,7 +955,7 @@ function IconBtn({ onClick, disabled, title, children, active, style: extra }) {
 // Main App
 export default function App() {
   injectCSS(GLOBAL_CSS);
-
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [messages,     setMessages]     = useState([]);
   const [input,        setInput]        = useState("");
   const [streaming,    setStreaming]     = useState(false);
@@ -851,13 +1147,13 @@ export default function App() {
     ttsStreamer.current?.reset();
     const ttsEnabled = featureFlags?.tts && !isMutedRef.current;
     const aiId = crypto.randomUUID();
-    let aiContent = ""; let aiThinking = ""; let toolCalls = {};
+    let aiContent = ""; let aiThinking = ""; let aiReasoning = ""; let toolCalls = {};
 
     const upsertAI = patch => {
       setMessages(prev => {
         const exists = prev.find(m => m.id === aiId);
         if (exists) return prev.map(m => m.id === aiId ? { ...m, ...patch } : m);
-        return [...prev, { id: aiId, role: "assistant", content: "", streaming: true, toolCalls: [], thinking: "", ts: now(), ...patch }];
+        return [...prev, { id: aiId, role: "assistant", content: "", streaming: true, toolCalls: [], thinking: "", reasoning: "", reasoningActive: false, ts: now(), ...patch }];
       });
     };
 
@@ -865,7 +1161,7 @@ export default function App() {
       setStreaming(true);
       const res = await fetch(`${API_BASE}/agent/stream`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: SESSION_ID, message: text }),
+        body: JSON.stringify({ session_id: SESSION_ID, message: text, thinking: thinkingEnabled,}),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setShowTyping(false);
@@ -886,13 +1182,45 @@ export default function App() {
           try { event = JSON.parse(line.slice(6)); } catch { continue; }
 
           switch (event.type) {
+            case "reasoning_delta":
+              if (event.content) {
+                aiReasoning += event.content;
+                upsertAI({
+                  reasoning: aiReasoning,
+                  reasoningActive: true,  // bubble shows live tail
+                  streaming: true,
+                  toolCalls: Object.values(toolCalls),
+                });
+              }
+              break;
             case "delta":
               if (event.content) {
                 aiContent += event.content;
-                upsertAI({ content: aiContent, streaming: true, toolCalls: Object.values(toolCalls), thinking: aiThinking || undefined });
+                upsertAI({
+                  content: aiContent,
+                  streaming: true,
+                  reasoningActive: false, // <- first content token = reasoning done
+                  toolCalls: Object.values(toolCalls),
+                  thinking: aiThinking || undefined,
+                });
                 if (ttsEnabled) ttsStreamer.current?.push(event.content);
               }
               break;
+            case "done":
+              if (ttsEnabled) ttsStreamer.current?.flush();
+              upsertAI({
+                streaming: false,
+                reasoningActive: false,    // <- collapse bubble to pill
+                toolCalls: Object.values(toolCalls),
+              });
+              break;
+            // case "delta":
+            //   if (event.content) {
+            //     aiContent += event.content;
+            //     upsertAI({ content: aiContent, streaming: true, toolCalls: Object.values(toolCalls), thinking: aiThinking || undefined, reasoning: aiReasoning || undefined });
+            //     if (ttsEnabled) ttsStreamer.current?.push(event.content);
+            //   }
+            //   break;
             case "thinking":
               if (event.content) { aiThinking = event.content; upsertAI({ thinking: aiThinking, toolCalls: Object.values(toolCalls) }); }
               break;
@@ -902,9 +1230,9 @@ export default function App() {
             case "tool_done":
               if (toolCalls[event.call_id]) { toolCalls[event.call_id].done = true; toolCalls[event.call_id].success = event.success; }
               upsertAI({ toolCalls: Object.values(toolCalls), streaming: true }); break;
-            case "done":
-              if (ttsEnabled) ttsStreamer.current?.flush();
-              upsertAI({ streaming: false, toolCalls: Object.values(toolCalls) }); break;
+            // case "done":
+            //   if (ttsEnabled) ttsStreamer.current?.flush();
+            //   upsertAI({ streaming: false, toolCalls: Object.values(toolCalls) }); break;
             case "error":
               upsertAI({ content: aiContent || `⚠ ${event.error}`, streaming: false }); break;
           }
@@ -1014,7 +1342,7 @@ export default function App() {
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
-              <IconBtn title="Use tools (coming soon)" disabled>&</IconBtn>
+              {/* <IconBtn title="Use tools (coming soon)" disabled>&</IconBtn> */}
               <IconBtn title="Attach file (coming soon)" disabled>+</IconBtn>
             </div>
 
@@ -1023,6 +1351,37 @@ export default function App() {
                 title={featureFlags?.asr ? (isRecording ? "Stop recording" : "Start voice input") : "ASR disabled"}
                 style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 3, cursor: featureFlags?.asr ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", fontSize: isRecording ? "0.75rem" : "0.9rem", background: isRecording ? "rgba(232,84,84,0.15)" : "transparent", border: `1px ${featureFlags?.asr ? "solid" : "dashed"} ${isRecording ? "var(--red)" : featureFlags?.asr ? "var(--frame-gold)" : "var(--border)"}`, color: isRecording ? "var(--red)" : featureFlags?.asr ? "var(--rose)" : "var(--text-muted)", animation: isRecording ? "rec-pulse 1.2s ease-in-out infinite" : "none", transition: "all 0.2s" }}>
                 {isRecording ? "⏹" : "◎"}
+              </button>
+
+              {/* Thinking toggle */}
+              <button
+                onClick={() => setThinkingEnabled(t => !t)}
+                title={thinkingEnabled ? "Thinking ON (◈) - click to disable" : "Thinking OFF (◇) - click to enable"}
+                style={{
+                  alignSelf: "flex-end",
+                  width: 38, height: 38, flexShrink: 0,
+                  background: thinkingEnabled ? "rgba(167,139,250,0.12)" : "transparent",
+                  border: `1px ${thinkingEnabled ? "solid" : "dashed"} ${thinkingEnabled ? "var(--purple)" : "var(--border)"}`,
+                  borderRadius: 3,
+                  color: thinkingEnabled ? "var(--purple)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: "1rem",
+                  transition: "all 0.22s",
+                  boxShadow: thinkingEnabled ? "0 0 10px rgba(167,139,250,0.28)" : "none",
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.borderColor = "var(--purple)";
+                  e.currentTarget.style.color = "var(--purple)";
+                  e.currentTarget.style.borderStyle = "solid";
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.borderColor = thinkingEnabled ? "var(--purple)" : "var(--border)";
+                  e.currentTarget.style.color = thinkingEnabled ? "var(--purple)" : "var(--text-muted)";
+                  e.currentTarget.style.borderStyle = thinkingEnabled ? "solid" : "dashed";
+                }}
+              >
+                {thinkingEnabled ? "◈" : "◇"}
               </button>
 
               <button onClick={sendMessage} disabled={!canSend} title="Send message"
@@ -1039,7 +1398,7 @@ export default function App() {
               {wakeActive ? "◎ wake word detected" : isRecording ? "◎ recording" : streaming ? "✦ processing..." : "■ ready"}
               {(aiAvatarProcessing || userAvatarProcessing) && <span style={{ color: "var(--frame-gold)", animation: "proc-pulse 1s ease-in-out infinite" }}>loading..</span>}
             </span>
-            <span>crow ver. 0.2.0</span>
+            <span>crow ver. 1.0.0</span>
           </div>
         </div>
       </div>

@@ -28,7 +28,7 @@ All notable changes for *Crow* are documented in this file.
     - TTS model loading overhead due to dependency incompatibility issues.
 
 
-## ver. 0.2.0:-
+## ver. 1.0.0:-
 ### Added:
     - Retrieval Augmentation Generation (local w/ chromadb) RAG w/ optional reranking and chunk retrieval tab in frontend.
     - Spotify tools capability. (requires Spotify Premium since Feb '26 - https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security)
@@ -38,15 +38,19 @@ All notable changes for *Crow* are documented in this file.
     - compatibility w/ thinking LLMs. tested & supports: llama3.2, qwen3.5, nemotron-3-nano
     - safety guardrails and prompt protection. 
 
-### Known issues & todo: 
-    - when 'thinking': random outta tokens OR finish_length=stop w/o content.
-    - recursive unnecessary tool-checking, limit to 1 for each tool?
-    - render 'thinking' block and format bold, italic, headings in frontend.
-    - google acc. linked not reflected in frontend + should ask to login before asking about tools (already there? sorta).
+### Known issues: 
+    - sometimes model requests recursive unnecessary tool calls (particularly: checking google calendar tool, since its added as a prerequisite for Create & Update tools)
+    - google acc. linked not reflected in frontend + should ask to login before asking about tools (already there? sorta)
+
+### Todo:    
+    - more tools
+    - multilingual asr+tts & faster inference
+    UI:
+    - thinking block after tool calling.
+    - render 'thinking' block and format bold, italic, headings INSIDE "thinking" block.
     - ui for .exe + bigger pic char sheet typa interface.
-    - faster tts inference.
+    PERSONALIZATION:
     - custom wake word
-    - deprecated/unused code cleanup 
 
 ### Fixed:
     - streaming of tokens w/&w/o agentic calls

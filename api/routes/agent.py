@@ -90,8 +90,7 @@ async def agent_stream(
                 summary=summary,
             )
 
-            async for step in agent.run_streaming(messages, req.session_id):
-
+            async for step in agent.run_streaming(messages, req.session_id, thinking=req.thinking):
                 if await request.is_disconnected():
                     log.info("client_disconnected_mid_agent")
                     break
@@ -103,6 +102,12 @@ async def agent_stream(
                 elif step.type == AgentStepType.THINKING and step.content:
                     # reasoning text shown as dimmed prefix in UI
                     yield _sse({"type": "thinking", "content": step.content})
+
+                elif step.type == AgentStepType.REASONING:
+                    # token-by-token reasoning stream -> ReasoningBubble in frontend
+                    # arrives before any content tokens. The bubble should transition from
+                    # live-tail to collapsed pill when 'done' flips reasoningActive off
+                    yield f'data: {json.dumps({"type": "reasoning_delta", "content": step.content})}\n\n'
 
                 elif step.type == AgentStepType.TOOL_CALL and step.tool_call:
                     yield _sse({

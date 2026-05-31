@@ -5,6 +5,11 @@ Wake-word SSE endpoint addition for audio routes:-
 
 The frontend connects to /audio/wake/events using EventSource and subscribes
 to detection events. When the browser receives "wake_detected", it starts ASR.
+
+This is the FRONTEND-CONNECTED path. The system-level path (no browser open)
+is handled entirely in crow_tray.py using the same WakeWordDetector.
+
+(add directly to api/routes/audio.py alongside the existing ASR/TTS routes instead of a seperate router?) !
 """
 
 from __future__ import annotations

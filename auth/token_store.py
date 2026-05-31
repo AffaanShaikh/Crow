@@ -42,7 +42,7 @@ log = get_logger(__name__)
 
 # Paths
 
-_TOKENS_DIR  = Path(os.getenv("TOKENS_DIR", "tokens"))
+_TOKENS_DIR  = Path(os.getenv("TOKENS_DIR", "data/tokens"))
 _KEY_FILE    = _TOKENS_DIR / ".key"
 _TOKENS_FILE = _TOKENS_DIR / ".tokens.enc"
 

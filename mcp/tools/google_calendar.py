@@ -43,6 +43,7 @@ import os
 import re
 import json
 import time as _time
+from dateutil import parser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -62,8 +63,27 @@ OAUTH_REDIRECT_PORT = 8000#8085
 # a Google Calendar event_id(s): 26 lowercase alphanumeric chars (base32-ish),
     # anything containing spaces, mixed case words, or >60 chars is almost certainly
     # a title or hallucination
-_REAL_EVENT_ID_RE = re.compile(r"^[a-z0-9_]{10,80}$")
+#_REAL_EVENT_ID_RE = re.compile(r"^[a-z0-9_]{10,80}$")
+_REAL_EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{5,128}$")
 
+def to_rfc3339(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+def parse_user_time(value: str, now: datetime) -> datetime:
+    """
+    Converts user input into a UTC datetime.
+    Supports:
+    - ISO strings
+    - "tomorrow 5pm"
+    - "in 2 hours"
+    """
+
+    dt = parser.parse(value, fuzzy=True)
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
 
 # shared auth client
 
@@ -88,9 +108,8 @@ class GoogleCalendarClient:
         from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
 
-        credentials_path = Path(os.getenv("GOOGLE_CREDENTIALS_PATH", "./credentials.json"))
-        token_path = Path(os.getenv("GOOGLE_TOKEN_PATH", "./token.json"))
-
+        credentials_path = Path(os.getenv("GOOGLE_CREDENTIALS_PATH", "./data/tokens/credentials.json"))
+        token_path = Path(os.getenv("GOOGLE_TOKEN_PATH", "./data/tokens/token.json"))
 
         if not credentials_path.exists():
             raise FileNotFoundError(
@@ -275,9 +294,11 @@ async def _resolve_event_id(
 
     # search the calendar
     now = datetime.now(timezone.utc)
-    time_min = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    time_max = (now + timedelta(days=23)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-
+    # time_min = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    # time_max = (now + timedelta(days=23)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    time_min = (now - timedelta(days=30)).isoformat()
+    time_max = (now + timedelta(days=365)).isoformat()
+    
     loop = asyncio.get_event_loop()
     results = await loop.run_in_executor(
         None,
@@ -312,6 +333,11 @@ async def _resolve_event_id(
             "Please call list_calendar_events first to find the correct event, "
             "then retry with its ID."
         )
+
+    if not items:
+        raise ValueError("No event found")
+    if len(items) > 1:
+        raise ValueError("Multiple events match. Provide event_id.")
 
     resolved_id = items[0]["id"]
     resolved_title = items[0].get("summary", "")
@@ -669,18 +695,29 @@ class CreateCalendarEventTool(BaseTool):
                 end_stripped = end_stripped[:10]
             end_spec: dict = {"date": end_stripped}
         else:
-            # normalizing natural language / partial ISO
-            start_norm = normalize_dt(start_time, now)
-            end_norm = normalize_dt(end_time, now)
-            t_start = _parse_utc(start_norm)
-            t_end = _parse_utc(end_norm)
+            t_start = parse_user_time(start_time, now)
+            t_end = parse_user_time(end_time, now)
+
+            # # normalizing natural language / partial ISO
+            # start_norm = normalize_dt(start_time, now)
+            # end_norm = normalize_dt(end_time, now)
+            # t_start = _parse_utc(start_norm)
+            # t_end = _parse_utc(end_norm)
             if t_end <= t_start: # validate start < end
                 # default to 1 hour if model gave bad range
                 t_end = t_start + timedelta(hours=1)
                 end_norm = t_end.strftime("%Y-%m-%dT%H:%M:%S+00:00")
                 log.warning("create_end_fixed", original=end_time, fixed=end_norm)
-            start_spec = {"dateTime": start_norm, "timeZone": "UTC"}
-            end_spec = {"dateTime": end_norm, "timeZone": "UTC"} 
+            #start_spec = {"dateTime": start_norm, "timeZone": "UTC"}
+            start_spec = {
+                "dateTime": to_rfc3339(t_start),
+                "timeZone": "UTC",
+            }
+            #end_spec = {"dateTime": end_norm, "timeZone": "UTC"} 
+            end_spec = {
+                "dateTime": to_rfc3339(t_end),
+                "timeZone": "UTC",
+            }
 
         # event request body:-
         body: dict[str, Any] = {
@@ -828,23 +865,48 @@ class UpdateCalendarEventTool(BaseTool):
         if location is not None:
             patch["location"] = location
         if start_time is not None:
-            patch["start"] = {"dateTime": normalize_dt(start_time, now), "timeZone": "UTC"}
+            patch["start"] = {"dateTime": to_rfc3339(parse_user_time(start_time, now)), "timeZone": "UTC"}
         if end_time is not None:
-            patch["end"] = {"dateTime": normalize_dt(end_time, now), "timeZone": "UTC"}
+            patch["end"] = {"dateTime": to_rfc3339(parse_user_time(end_time, now)), "timeZone": "UTC"}
 
         if not patch:
             return {"success": False, "message": "No fields to update were provided."}
 
         loop = asyncio.get_event_loop()
-        kw = {
-            "calendarId": calendar_id,
-            "eventId": real_id,
-            "body": patch,
-            "sendUpdates": "all",
-        }
+        # kw = {
+        #     "calendarId": calendar_id,
+        #     "eventId": real_id,
+        #     "body": patch,
+        #     "sendUpdates": "all",
+        # }
+        existing = service.events().get(
+            calendarId=calendar_id,
+            eventId=real_id
+        ).execute()
+        full_event = dict(existing)
+        for k, v in patch.items():
+            if isinstance(v, dict) and isinstance(full_event.get(k), dict):
+                full_event[k] = {**full_event[k], **v}
+            else:
+                full_event[k] = v
+        # updated = await loop.run_in_executor(
+        #     None,
+        #     lambda: service.events().patch(**kw).execute(),
+        #     lambda: service.events().update(
+        #                 calendarId=calendar_id,
+        #                 eventId=real_id,
+        #                 body=full_event,
+        #                 sendUpdates="all",
+        #             ).execute()
+        # )
         updated = await loop.run_in_executor(
             None,
-            lambda: service.events().patch(**kw).execute(),
+            lambda: service.events().update(
+                calendarId=calendar_id,
+                eventId=real_id,
+                body=full_event,
+                sendUpdates="all",
+            ).execute()
         )
 
         log.info("calendar_event_updated", event_id=real_id, fields=list(patch.keys()))

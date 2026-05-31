@@ -159,12 +159,52 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Build output
+dist/
+build/
+*.spec.bak
+
+# User data
+data/
+tokens/
+*.enc
+*.key
+
+# Secrets
+.env
+.env.local
+credentials.json
+token.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+ 
+# OS
+.DS_Store
+Thumbs.db
+
 ve/
 garbage/ 
 *.json
 logs/
 demos/
 tokens/
+data/tokens/
 token.json
 temp.txt
 data/
+face/dist/
+face/node_modules/
+dist/
+build/
+.env
+credentials.json
+tokens/
+token.json
+packaging/.env.default
+assets/

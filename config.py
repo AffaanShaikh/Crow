@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # app metadata
     app_name: str = "Crow"
-    app_version: str = "0.2.0"
+    app_version: str = "1.0.0"
     environment: Literal["development", "production"] = "development"
     log_level: str = "DEBUG"
     json_logs: bool = False # set True in production
@@ -26,8 +26,13 @@ class Settings(BaseSettings):
     # server config.
     host: str = "0.0.0.0"
     port: int = 8000
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"] # frontend dev servers
-
+    #cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"] # frontend dev servers
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",   # <- for packaged app: frontend & backend share this origin
+    ]
     # Canonical public URL of this backend - used to build OAuth redirect URIs,
     # reachable by the browser AFTER the provider redirects it back.
     #   - Google accepts both localhost and 127.0.0.1
@@ -123,20 +128,19 @@ class Settings(BaseSettings):
     mcp_dry_run: bool = False            # for logging tool calls without executing
 
     # Google Calendar
-    google_credentials_path: str = "./credentials.json"
-    google_token_path: str = "./token.json"
+    google_credentials_path: str = "./data/tokens/credentials.json" #"./credentials.json"
+    google_token_path: str = "./data/tokens/token.json"
 
     # Spotify OAuth
     # Get from: https://developer.spotify.com/dashboard -> your app -> here in Settings or in .env
-    spotify_client_id: str = Field(..., alias="SPOTIFY_CLIENT_ID")
-    spotify_client_secret: str = Field(..., alias="SPOTIFY_CLIENT_SECRET")
+    spotify_client_id: str = Field("", alias="SPOTIFY_CLIENT_ID")
+    spotify_client_secret: str = Field("", alias="SPOTIFY_CLIENT_SECRET")
 
     # The Persona
     persona_name: str = "Elda"
     persona_description: str = (
-        "You are a local autonomous AI agent, programmed to assist the user with any and all of his/her queries, questions and desires. \
-            Develop his/her skills as you explain and perform tasks. Never compromise on your ability to inject relating ENGINEERING, PSYCOLOGICAL and PHILOSOPHICAL concepts and ideas. \
-            Help him/her learn things thoroughly, radiate your limitless knowledge, teach hidden patterns and secrets and if possible, help humans."
+        "You are a local autonomous AI agent, programmed to assist the user with any and all of their queries, questions and desires. \
+            You are meant to help develop their skills as you explain and perform tasks. Never shy on your ability to inject relatable things/references from your vast knowledge base."
     )
 
 

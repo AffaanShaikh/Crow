@@ -19,6 +19,7 @@ faster-whisper==1.1.0
 #   CPU:  pip install torch --index-url https://download.pytorch.org/whl/cpu
 #   CUDA: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124S
 #         for my system, i ran: pip install --pre --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+#                               pip install --pre --index-url https://download.pytorch.org/whl/nightly/cu128 torch torchvision torchaudio
 
 # tts
 kokoro==0.9.4
@@ -57,4 +58,6 @@ openwakeword==0.6.0
 #     py
 #     import openwakeword
 #     from openwakeword.model import Model
-#     openwakeword.utils.download_models("hey_mycroft")
+#     openwakeword.utils.download_models(["hey_mycroft"])
+# pip install silero-vad <- for silero vad models used by openwakeword
+# git clone https://github.com/snakers4/silero-vad.git

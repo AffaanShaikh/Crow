@@ -120,11 +120,12 @@ class ToolResult(BaseModel):
 
 class AgentStepType(str, Enum):
     THINKING = "thinking"       # LLM reasoning before tool call
+    REASONING = "reasoning"     # LLM's internal reasoning
     TOOL_CALL = "tool_call"     # LLM decided to call a tool
     TOOL_RESULT = "tool_result" # tool execution result
     DELTA = "delta"             # streaming response
     FINAL = "final"             # LLM produced final answer
-
+    
 
 class AgentStep(BaseModel):
     """One step in the agent's reasoning chain."""

@@ -56,6 +56,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(None, ge=1, le=4096)
     stream: Optional[bool] = None
+    thinking: bool = False  # True -> reasoning_effort="low", False -> "none"
 
 
 class ChatResponse(BaseModel):

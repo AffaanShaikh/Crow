@@ -98,10 +98,13 @@ class VADProcessor:
                 model, _ = torch.hub.load(
                     repo_or_dir="snakers4/silero-vad",
                     model="silero_vad",
-                    force_reload=False,
+                    force_reload=False, # ensures we get the latest version (esp. for bug fixes) if set to True or just to download if not already cached, set to False to use cached version if available
                     trust_repo=True,
                 )
                 model.eval()
+                # from silero_vad import load_silero_vad
+                # model = load_silero_vad()
+
                 self._model = model
                 log.info("silero_vad loaded")
             except Exception as exc:

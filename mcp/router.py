@@ -160,14 +160,20 @@ class ToolRouter:
 
     # public api
 
-    async def get_tools_for_messages(self, messages: list[list[str]]) -> list[dict]:
+    # async def get_tools_for_messages(self, messages: list[list[str]]) -> list[dict]:
+    async def get_tools_for_messages(self, messages: list[str]) -> list[dict]:
         """
         Return OpenAI-format tool schemas relevant to this message.
         Returns [] for non-tool requests - agent loop becomes a plain chat call.
         """
+        if not messages:
+            log.debug("router_no_messages")
+            return []
         categories = await self._classify(messages)
         if not categories:
-            log.debug("router_no_tools", message_preview=messages[0][:60])
+            #log.debug("router_no_tools", message_preview=messages[0][:60])
+            preview = messages[0][:60] if messages else ""
+            log.debug("router_no_tools", message_preview=preview)
             return []
 
         tools: list[dict] = []
@@ -178,9 +184,10 @@ class ToolRouter:
             except ValueError:
                 log.warning("router_unknown_category", name=cat_name)
 
+        preview = messages[0][:60] if messages else ""
         log.info(
             "router_decision",
-            message_preview=messages[0][:60],
+            message_preview=preview,
             matched_categories=categories,
             tools_injected=len(tools),
         )
@@ -195,13 +202,17 @@ class ToolRouter:
             Tier 2: LLM call (only for long ambiguous messages where tier 1 found nothing).
         """
         # Tier 1 - keyword
-        matched = self._keyword_match(messages[0]+messages[1])
+        #matched = self._keyword_match(messages[0]+messages[1])
+        matched = self._keyword_match(" ".join(messages))
         if matched:
             log.debug("router_tier1_keyword_match", categories=matched)
             return matched
 
         # Tier 2 - LLM
-        word_count = len(messages[0].split() + messages[1].split())
+        #word_count = len(messages[0].split() + messages[1].split())
+        combined = " ".join(messages)
+        matched = self._keyword_match(combined)
+        word_count = len(combined.split())
         if word_count > AMBIGUITY_WORD_THRESHOLD and self._category_descriptions:
             llm_result = await self._llm_classify(messages)
             if llm_result:
@@ -245,12 +256,17 @@ class ToolRouter:
         system = _CLASSIFIER_SYSTEM.format(categories=cat_lines)
 
         try:
-            recent_messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": messages[0]},
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": messages[1]},
-                ]
+            # recent_messages=[
+            #         {"role": "system", "content": system},
+            #         {"role": "user", "content": messages[0]},
+            #         {"role": "system", "content": system},
+            #         {"role": "user", "content": messages[1]},
+            #     ]
+            recent_text = "\n".join(messages or [])
+            recent_messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": recent_text},
+            ]
             params = {                                      # thinking params:-
                 "model":       settings.llm_model_name,
                 "messages":    recent_messages,

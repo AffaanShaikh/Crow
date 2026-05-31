@@ -107,7 +107,7 @@ class LLMClient:
                 log.info("params_for_stream", params=params)
                 stream = await self._client.chat.completions.create(**params)
                 async for chunk in stream:
-                    log.info("chunk", chunk)
+                    #log.info("chunk", chunk)
                     if not chunk.choices:
                         continue
 
@@ -213,6 +213,106 @@ class LLMClient:
                 log.error("llm_api_error", status=exc.status_code, body=exc.message)
                 raise
 
+    async def stream_full(
+            self,
+            messages: list[Message],
+            *,
+            max_tokens: int | None = None,
+            temperature: float | None = None,
+            top_p: float | None = None,
+            top_k: int | None = None,
+            min_p: float | None = None,
+            reasoning_effort: str | None = None,
+        ) -> AsyncIterator[tuple[str, str]]:
+            """
+            Yields (kind, token) tuples so callers can distinguish reasoning from content.
+            kind = "reasoning"  ->  delta.reasoning token  (model's internal thought)
+            kind = "content"    ->  delta.content token    (the actual response)
+
+            Used on Path A (direct persona) (where we want to surface thinking in the UI)
+            Phase 2 synthesis stays on stream() with reasoning_effort="none" - no reasoning
+            tokens there, no latency cost, no thinking to display.
+
+            When reasoning_effort is None (default), the model reasons freely.
+            Pass reasoning_effort="none" to suppress thinking (same as stream()).
+            """
+            params = self._build_params(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                stream=True,
+                reasoning_effort=reasoning_effort,
+            )
+
+            attempt = 0
+            while attempt <= settings.llm_max_retries:
+                try:
+                    t0 = time.perf_counter()
+                    content_tokens   = 0
+                    reasoning_tokens = 0
+                    finish_reason    = None
+
+                    log.info("params_for_stream_full", params=params)
+                    response = await self._client.chat.completions.create(**params)
+
+                    async for chunk in response:
+                        if not chunk.choices:
+                            continue
+                        choice = chunk.choices[0]
+                        finish_reason = choice.finish_reason or finish_reason
+                        delta = choice.delta
+
+                        reasoning_tok = getattr(delta, "reasoning", None)
+                        if reasoning_tok:
+                            reasoning_tokens += 1
+                            yield ("reasoning", reasoning_tok)
+                        elif delta.content:
+                            content_tokens += 1
+                            yield ("content", delta.content)
+
+                    elapsed = time.perf_counter() - t0
+
+                    if finish_reason == "length":
+                        log.warning(
+                            "stream_full_truncated",
+                            content_tokens=content_tokens,
+                            reasoning_tokens=reasoning_tokens,
+                            max_tokens=params["max_tokens"],
+                        )
+
+                    # Reasoning with no content still valid here - caller shows the
+                    # reasoning tokens in the bubble even if content is empty.
+                    # Different from stream() where no content = error.
+                    if content_tokens == 0 and reasoning_tokens > 0:
+                        log.warning(
+                            "stream_full_no_content",
+                            reasoning_tokens=reasoning_tokens,
+                            hint="Model only reasoned. Reasoning tokens were still surfaced in the UI.",
+                        )
+
+                    log.info(
+                        "stream_full_complete",
+                        content_tokens=content_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        finish_reason=finish_reason,
+                        elapsed_s=round(elapsed, 3),
+                    )
+                    return
+
+                except (APIConnectionError, APITimeoutError) as exc:
+                    attempt += 1
+                    log.warning("stream_full_retry", attempt=attempt, error=str(exc))
+                    if attempt > settings.llm_max_retries:
+                        raise
+                    await asyncio.sleep(2 ** attempt)
+
+                except APIStatusError as exc:
+                    log.error("llm_api_error", status=exc.status_code, body=exc.message)
+                    raise
+                
     async def complete(
         self,
         messages: list[Message],
@@ -323,8 +423,7 @@ class LLMClient:
         top_k: int | None,
         min_p: int | None,
         stream: bool,
-        # think: bool | None = None,
-        reasoning_effort: str = "low",
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         # extra: dict[str, Any] = {"repeat_penalty": settings.default_repeat_penalty, "reasoning_effort": reasoning_effort}
         # extra_body : dict[dict]= {
@@ -352,17 +451,15 @@ class LLMClient:
             #"reasoning_effort": reasoning_effort,
             #"extra_body":  extra_body,
         }
-        extra_body = {}
+        extra_body: dict = {}
         if top_k is not None:
             extra_body["top_k"] = top_k
         if min_p is not None:
             extra_body["min_p"] = min_p
-        extra_body["reasoning_effort"] = reasoning_effort
-        
+        if reasoning_effort is not None: 
+            extra_body["reasoning_effort"] = reasoning_effort # so if provided
         if extra_body:
             params["extra_body"] = extra_body
-        
-
         return params
             
             

@@ -88,11 +88,11 @@ def _build_orchestration_system() -> str:
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     return (
-        f"You are a precise tool-calling agent. Call tools correctly to fulfill the request.\n\n"
+        f"As a precise tool-calling agent, call tools correctly to fulfill the user's request.\n\n"
         f"CURRENT UTC TIME: {now.strftime('%A %Y-%m-%d %H:%M')} UTC\n\n"
         "GENERAL RULES:\n"
         "- DO NOT write conversational text - ONLY call tools\n"
-        "- Required parameters must come from the user message or prior tool results\n"
+        "- Required parameters must ONLY come from the user message or prior tool results\n"
         "- Omit optional parameters the user did not provide (never pass empty strings)\n"
         "- Stop calling tools once you have all necessary data\n"
         "RULES FOR TOOLS:-"
@@ -109,7 +109,7 @@ def _build_orchestration_system() -> str:
         # - For "this week" / "today" / "upcoming" queries, DO NOT specify 'time_min' or 'time_max' - let the tool use its defaults
         # - Only specify time ranges when the user gives specific dates (ex., "events in July", "meetings on March 20th"), pay attention to the year too ofcourse.
         "ATTENDEES RULES:\n"
-        "- attendees must be a JSON array of email addresses containing @ (e.g. [\"alice@x.com\"])\n"
+        "- attendees must be a JSON array of email addresses containing @ (e.g. [\"batman@x.com\"])\n"
         "- Omit attendees entirely if no email address was explicitly given\n\n"
         "EVENT_ID RULES (critical):\n"
         "- event_id is a ~26-char alphanumeric string from the Google Calendar API\n"
@@ -135,8 +135,8 @@ def _build_orchestration_system() -> str:
 # {tool_summary}
 # """
 SYNTHESIS_CONTEXT_TEMPLATE = """\
-TOOLS RETURNED RESULTS:- \
-Today is {today_utc} (UTC). \
+Today is {today_utc} (UTC). Below is the (fairly unstructured) response/result of the tool calls to help answer the user's request. \
+Accurately parse, interpret and use this data in your response. \
 {tool_summary}
 """
 
@@ -212,6 +212,7 @@ class AgentLoop:
         self,
         messages: list[Message],
         session_id: str,
+        thinking: bool = False,
     ) -> AsyncIterator[AgentStep]:
         """
         Streaming agent loop. Yields AgentStep events as the agent reasons.
@@ -225,6 +226,8 @@ class AgentLoop:
         Converts Message objects -> dicts, injects tool-use addendum into
         the system message, then loops until no more tool calls.
         """
+        reasoning_effort = "low" if thinking else "none"
+        
         # user's latest message extracted for routing
         last_user_msg = _last_user_message(messages)
         last_user_msg_two = _last_user_messages(messages, limit=2)
@@ -303,13 +306,36 @@ class AgentLoop:
             else:
                 use_messages = messages
 
+            # full: list[str] = []
+            # async for token in self._stream_persona_direct(use_messages):
+            #     full.append(token)
+            #     yield AgentStep(type=AgentStepType.DELTA, content=token)
+            # yield AgentStep(type=AgentStepType.FINAL, content="".join(full))
+            # return
+
+            # full: list[str] = []
+            # async for kind, token in self._stream_persona_direct(use_messages):
+            #     if kind == "reasoning":
+            #         yield AgentStep(type=AgentStepType.REASONING, content=token)
+            #     else:   # "content"
+            #         full.append(token)
+            #         yield AgentStep(type=AgentStepType.DELTA, content=token)
+            # yield AgentStep(type=AgentStepType.FINAL, content="".join(full))
+            # return
+
             full: list[str] = []
-            async for token in self._stream_persona_direct(use_messages):
-                full.append(token)
-                yield AgentStep(type=AgentStepType.DELTA, content=token)
+            async for kind, token in self._stream_persona_direct(
+                use_messages,
+                reasoning_effort=reasoning_effort,
+            ):
+                if kind == "reasoning":
+                    yield AgentStep(type=AgentStepType.REASONING, content=token)
+                else:
+                    full.append(token)
+                    yield AgentStep(type=AgentStepType.DELTA, content=token)
             yield AgentStep(type=AgentStepType.FINAL, content="".join(full))
             return
-
+        
         # path B: tools needed -> Phase 1 (orchestration)
         # use a stripped working context - no persona, no history, just the task
         # system prompt rebuild each call so UTC timestamp is always fresh, i.e. llm knows whats up
@@ -398,7 +424,7 @@ class AgentLoop:
         # # Phase 2: final synthesis with persona, (streaming)
         # full_response: list[str] = []
 
-        # async for token in self._stream_synthesise_with_persona(
+        # async for token in self._stream_synthesise_with_person(
         #     messages, accumulated_results
         # ):
         #     full_response.append(token)
@@ -441,8 +467,9 @@ class AgentLoop:
                 log.warning("rag_retrieval_failed", error=str(exc))
 
         full: list[str] = []
+        # reasoning_effort="low" if thinking else "none" <- define above
         async for token in self._stream_synthesise_with_persona(
-            messages, accumulated_results, rag_context=rag_context
+            messages, accumulated_results, rag_context=rag_context, reasoning_effort=reasoning_effort,
         ):
             full.append(token)
             yield AgentStep(type=AgentStepType.DELTA, content=token)
@@ -473,23 +500,48 @@ class AgentLoop:
     async def _stream_persona_direct(
         self,
         messages: list[Message],
-    ) -> AsyncIterator[str]:
+        reasoning_effort: str = "none",
+    ) -> AsyncIterator[tuple[str, str]]:
         """
         Path A: stream directly through the full persona context.
         Filters qwen3 <think> blocks from the token stream.
         """
-        log.info("stream direct persona", final_prompt_to_llm=messages)
-        raw_stream = self.llm.stream(       # non-thinking params:-
+
+        async for kind_token in self.llm.stream_full(
             messages,
             max_tokens=settings.default_max_tokens,
-            temperature=0.7, #settings.default_temperature,
+            temperature=0.7,
             top_p=0.8,
             top_k=20,
             min_p=0,
-            reasoning_effort="none"
-        )
-        async for token in raw_stream: # _strip_thinking(raw_stream):
-            yield token
+            # reasoning_effort intentionally omitted: model reasons at its own pace
+            # nvm now set via UI toggle
+            reasoning_effort=reasoning_effort,
+        ):
+            yield kind_token
+        # log.info("stream direct persona", final_prompt_to_llm=messages)
+        # raw_stream = self.llm.stream(       # non-thinking params:-
+        #     messages,
+        #     max_tokens=settings.default_max_tokens,
+        #     temperature=0.7, #settings.default_temperature,
+        #     top_p=0.8,
+        #     top_k=20,
+        #     min_p=0,
+        #     reasoning_effort="none"
+        # )
+        # async for token in raw_stream: # _strip_thinking(raw_stream):
+        #     yield token
+        # raw_stream = self.llm.stream(
+        #     messages,
+        #     max_tokens=settings.default_max_tokens,
+        #     temperature=0.7,
+        #     top_p=0.8,
+        #     top_k=20,
+        #     min_p=0,
+        #     think=False,
+        # )
+        # async for token in raw_stream:
+        #     yield token
 
     # async def _synthesise_with_persona(
     #     self,
@@ -546,6 +598,7 @@ class AgentLoop:
         original_messages: list[Message],
         tool_results: list,
         rag_context: str | None = None,
+        reasoning_effort: str = "none",
     ) -> AsyncIterator[str]:
         """
         Phase 2 - inject tool results (and RAG context) into the full persona context, then stream
@@ -560,18 +613,28 @@ class AgentLoop:
           [system: tool context injection]  <- tool results (if any)
           [user: current message]
         """
+        # if not tool_results and not rag_context:
+        #     # No enrichment - stream directly through persona
+        #     async for token in self._stream_persona_direct(original_messages):
+        #         yield token
+        #     return
+
+        # Fallback: no enrichment - stream direct persona.
+        # Skip reasoning tokens here: synthesis is for reporting tool results,
+        # not for surfacing thinking. reasoning_effort="none" means no reasoning
+        # tokens anyway, but the guard is explicit for clarity.
         if not tool_results and not rag_context:
-            # No enrichment - stream directly through persona
-            async for token in self._stream_persona_direct(original_messages):
-                yield token
+            async for kind, token in self._stream_persona_direct(original_messages, reasoning_effort=reasoning_effort):
+                if kind == "content":
+                    yield token
             return
 
         from datetime import datetime, timezone as _tz
         today_utc = datetime.now(_tz.utc).strftime("%A, %B %d %Y at %H:%M UTC")
-        r: str | None = ""  # !
-        raw_tool_results: str | None = f"raw tool(s) output: {r}"
-        raw_tool_results.format(r=tool_results)
-        tool_summary = _format_tool_results(tool_results) + raw_tool_results
+        # r: str | None = ""  # !
+        # raw_tool_results: str | None = f"raw tool(s) output: {r}"
+        # raw_tool_results.format(r=tool_results)
+        tool_summary = _format_tool_results(tool_results) #+ raw_tool_results
 
         injection_content = SYNTHESIS_CONTEXT_TEMPLATE.format(
             today_utc=today_utc,
@@ -627,10 +690,34 @@ class AgentLoop:
             top_p=0.95,
             top_k=20,
             min_p=0,
-            reasoning_effort="low"
+            reasoning_effort=reasoning_effort#"none"
         )
         async for token in raw_stream: # _strip_thinking(raw_stream):
             yield token
+        # tokens_yielded = 0
+        # raw_stream = self.llm.stream(
+        #     augmented,
+        #     max_tokens=settings.default_max_tokens,
+        #     temperature=0.6,
+        #     top_p=0.95,
+        #     top_k=20,
+        #     min_p=0,
+        #     think=False,
+        # )
+        # async for token in raw_stream:
+        #     tokens_yielded += 1
+        #     yield token
+
+        # if tokens_yielded == 0:
+        #     log.warning("synthesis_empty_retrying")
+        #     async for token in self.llm.stream(
+        #         augmented,
+        #         max_tokens=settings.default_max_tokens,
+        #         temperature=0.7,
+        #         think=False,
+        #     ):
+        #         tokens_yielded += 1
+        #         yield token
 
 # non-streaming tool call
 
@@ -666,10 +753,10 @@ class AgentLoop:
             max_tokens=512,     # settings.default_max_tokens,
             temperature=0.7,    # 0.7 or 0.0 deterministic tool selection
             top_p=0.8,
-
+            # extra_body={"top_k": 20, "min_p": 0, "think": False},
             # temperature=0.6,    # thinking params. + set reasoning_effort to 'high'
             # top_p=0.95,
-            # extra_body=extra_body,
+            extra_body=extra_body,
         )
         log.info("callfortools_response", response)
         msg = response.choices[0].message
